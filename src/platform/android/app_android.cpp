@@ -69,6 +69,31 @@ std::vector<std::wstring> romDirs(const std::wstring& data) {
 
 void openUrl(const char* url) { SDL_OpenURL(url); }
 
+bool httpGet(const char* url, std::string& out) {
+  out.clear();
+  JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();  // (attaches this thread)
+  jobject act = (jobject)SDL_AndroidGetActivity();
+  if (!env || !act) return false;
+  jclass cls = env->GetObjectClass(act);
+  if (jmethodID m = env->GetStaticMethodID(cls, "httpGet", "(Ljava/lang/String;)Ljava/lang/String;")) {
+    jstring u = env->NewStringUTF(url);
+    jstring r = (jstring)env->CallStaticObjectMethod(cls, m, u);
+    if (r) {
+      if (const char* c = env->GetStringUTFChars(r, nullptr)) {
+        out = c;
+        env->ReleaseStringUTFChars(r, c);
+      }
+      env->DeleteLocalRef(r);
+    }
+    env->DeleteLocalRef(u);
+  }
+  env->ExceptionClear();
+  env->DeleteLocalRef(cls);
+  env->DeleteLocalRef(act);
+  return !out.empty();
+}
+void openFolder(const std::wstring&) {}
+
 // (Android has one full-screen window: the aspect and scaling settings apply as it's drawn)
 void App::applyDisplayMode() {}
 
@@ -115,6 +140,35 @@ void App::pollPick() {
   if (!snes) menu.notify("That isn't the Super Mario All-Stars ROM - see the game card", 4.0f);
 }
 
+// A cover or the background chosen with the system picker (copied into
+// files/covers by SmasActivity.pickImage), read again once it's there.
+void App::pickArt(int card) {
+  if (pickingArt) return;
+  JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
+  jobject act = (jobject)SDL_AndroidGetActivity();
+  if (!env || !act) return;
+  jclass cls = env->GetObjectClass(act);
+  if (jmethodID m = env->GetStaticMethodID(cls, "pickImage", "(Ljava/lang/String;)V")) {
+    jstring name = env->NewStringUTF(Launcher::artName(card));
+    env->CallStaticVoidMethod(cls, m, name);
+    env->DeleteLocalRef(name);
+    pickingArt = true;
+  }
+  env->ExceptionClear();
+  env->DeleteLocalRef(cls);
+  env->DeleteLocalRef(act);
+}
+
+void App::pollArtPick() {
+  if (!pickingArt) return;
+  jint r = callActivityInt("pollImageResult");
+  if (r == -1) return;
+  pickingArt = false;
+  if (r <= 0) return;
+  applyLauncherArt(true);
+  menu.notify("Picture added", 2.5f);
+}
+
 // Taps and drags: on the launcher's cards and buttons, the menus' rows; the
 // on-screen pad's Menu button.
 void App::touchFrame() {
@@ -159,6 +213,7 @@ bool App::init() {
   saveDir = pathJoin(exeDir, L"saves");
   const char* external = SDL_AndroidGetExternalStoragePath();
   shotDir = pathJoin(external ? widenUtf8(external) : exeDir, L"screenshots");
+  msuDir = pathJoin(external ? widenUtf8(external) : exeDir, L"msu");  // (MSU-1 packs: copied in over USB)
   makeDir(saveDir);
   makeDir(pathJoin(exeDir, L"roms"));
   if (!cfg.load(configPath)) cfg.save(configPath);
@@ -275,6 +330,7 @@ void App::run() {
     }
     if (!running) break;
     pollPick();
+    pollArtPick();
     Uint64 now = SDL_GetPerformanceCounter();
     double dt = (double)(now - last) / freq;
     last = now;

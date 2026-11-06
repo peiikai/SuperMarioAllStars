@@ -444,7 +444,7 @@ void SmasGame::onStateLoaded() {
   std::vector<uint8_t> x;
   x.swap(pendingExt_);
   bool loaded[2] = {};
-  bool achLoaded = false;
+  bool achLoaded = false, msuLoaded = false;
   [&] {
     const uint8_t* p = x.data();
     const uint8_t* end = p + x.size();
@@ -458,7 +458,7 @@ void SmasGame::onStateLoaded() {
     // from older states.)
     // (... and the achievement run: absent from older states, which then
     // don't count.)
-    for (int g = 0; g < 5; g++) {
+    for (int g = 0; g < 6; g++) {
       uint32_t n = 0;
       if (end - p < 4) return;
       std::memcpy(&n, p, 4);
@@ -466,11 +466,14 @@ void SmasGame::onStateLoaded() {
       if ((size_t)(end - p) < n) return;
       if (g < 2) loaded[g] = g == 0 ? smb2_->loadExt(p, n) : smb3_->loadExt(p, n, version);
       else if (g == 4) achLoaded = (ach_.load(p, n), true);
-      else if (Smb1Engine* e = g == 2 ? smb1_.get() : smbll_.get()) e->loadExt(p, n, e == engine());
+      else if (g == 5) {  // (MSU-1's track and place: a later addition)
+        if (snes_.msu) snes_.msu->loadState(p, n), msuLoaded = true;
+      } else if (Smb1Engine* e = g == 2 ? smb1_.get() : smbll_.get()) e->loadExt(p, n, e == engine());
       p += n;
     }
   }();
   if (!achLoaded) ach_.load(nullptr, 0);
+  if (!msuLoaded && snes_.msu) snes_.msu->loadState(nullptr, 0);  // (a state from before: its own music, not the pack's)
   if (!loaded[0]) smb2_->assumeNarrowState();
   if (!loaded[1]) smb3_->assumeNarrowState();
 }
@@ -479,11 +482,14 @@ std::vector<uint8_t> SmasGame::saveExt() const {
   std::vector<uint8_t> out(5);
   std::memcpy(out.data(), &kExtMagic, 4);
   out[4] = kExtVersion;
-  for (int g = 0; g < 5; g++) {
+  for (int g = 0; g < 6; g++) {
     std::vector<uint8_t> b;
     if (g == 0) smb2_->saveExt(b);
     else if (g == 1) smb3_->saveExt(b);
     else if (g == 4) b = ach_.save();
+    else if (g == 5) {
+      if (snes_.msu) b = snes_.msu->saveState();
+    }
     else if (Smb1Engine* e = g == 2 ? smb1_.get() : smbll_.get()) e->saveExt(b);
     uint32_t n = (uint32_t)b.size();
     const uint8_t* np = (const uint8_t*)&n;
@@ -499,6 +505,24 @@ void SmasGame::loadExt(const uint8_t* data, size_t size) {
 
 // Drop any level-select launch in progress and per-game view state: after a
 // state load or a console reset they would act on the wrong game state.
+void SmasGame::setNesBrickBounce(bool on) {
+  // (unheadered ROM offsets: a routine in free space at $00:FFA0 - fall speed
+  // 1, the bump sound - called in place of each game's "LDA #$FE / STA $A0")
+  static const uint8_t kRoutine[8] = {0xA9, 0x01, 0x85, 0xA0, 0x8D, 0x00, 0x16, 0x6B};  // LDA #1, STA $A0, STA $1600, RTL
+  static const uint8_t kCall[4] = {0x22, 0xA0, 0xFF, 0x00};                             // JSL $00FFA0
+  static const uint8_t kOrig[4] = {0xA9, 0xFE, 0x85, 0xA0};                             // LDA #$FE, STA $A0
+  static const size_t kSites[2] = {0x01BFB6, 0x06BDA4};                                 // $03:BFB6, $0D:BDA4
+  std::vector<uint8_t>& rom = snes_.rom;
+  if (rom.size() < 0x80000) return;
+  // (only over the bytes it expects: another version of the ROM, or a patch there, is left alone)
+  for (size_t at : kSites)
+    if (std::memcmp(&rom[at], kOrig, 4) != 0 && std::memcmp(&rom[at], kCall, 4) != 0) return;
+  for (size_t i = 0; i < 8; i++)
+    if (rom[0x7FA0 + i] != 0xFF && rom[0x7FA0 + i] != kRoutine[i]) return;
+  for (size_t i = 0; i < 8; i++) rom[0x7FA0 + i] = on ? kRoutine[i] : 0xFF;
+  for (size_t at : kSites) std::memcpy(&rom[at], on ? kCall : kOrig, 4);
+}
+
 void SmasGame::cancelWarps() {
   warp_ = Warp();
   warpOverride_ = false;

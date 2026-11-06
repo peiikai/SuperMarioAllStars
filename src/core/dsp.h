@@ -30,6 +30,11 @@ public:
   int voiceLevel(int v) const { return voices[v].env; }
   // Bitmask of voices muted by the user (for sound test / debugging)
   uint8_t muteMask = 0;
+  // Music and sound effects at their own volumes (256 = as made): the voices
+  // the sound driver has given to sound effects (see Apu::musicSfxGain) are at
+  // sfxGain, the rest (the music) at musicGain. Only what is heard changes.
+  uint8_t sfxVoices = 0;
+  int musicGain = 256, sfxGain = 256;
 
   // Serialization helpers
   struct State;

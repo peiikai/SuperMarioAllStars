@@ -22,6 +22,7 @@
 //   record NAME / stoprec    <dir>\NAME.mkv (60 fps x hfr) + NAME.pcm (32 kHz stereo s16) + NAME.txt
 //   shot NAME                <dir>\NAME.png
 //   mark NAME                <dir>\marks.txt: the pass and an FNV-1a of the console's work RAM
+//   achexport DIR            Achievements > Export to CSV, into <dir>\DIR
 //   quit
 #include <algorithm>
 #include <cmath>
@@ -29,6 +30,7 @@
 #include <sstream>
 
 #include "app/app.h"
+#include "app/achexport.h"
 #include "app/sys.h"
 #include "core/png.h"
 
@@ -180,6 +182,7 @@ void App::atRunSteps() {
       }
     } else if (s.cmd == "set") {
       atSet(a);
+      launcher.setAllStarsOnly(cfg.launcherAllStars);  // (launcher.allstars_only, read at start otherwise)
     } else if (s.cmd == "hfr") {
       at.subs = std::clamp(atoi(a.c_str()), 1, (int)Ppu::kMaxSubFrames);
     } else if (s.cmd == "menu") {
@@ -227,6 +230,9 @@ void App::atRunSteps() {
         fprintf(f, "%s pass %d ram %08x\n", a.c_str(), at.pass, hsh);
         fclose(f);
       }
+    } else if (s.cmd == "achexport") {  // achexport DIR: Achievements > Export to CSV, into <dir>/DIR
+      std::string err;
+      if (!exportAchievements(pathJoin(at.dir, widenUtf8(a)), achStore, &err)) logf("autotest: achexport: %s", err.c_str());
     } else if (s.cmd == "quit") {
       running = false;
     }

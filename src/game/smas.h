@@ -50,6 +50,10 @@ public:
   // Call after a save state was loaded (rebuilds tracking state).
   void onStateLoaded();
   void cancelWarps();  // also call on a user-initiated console reset
+  // Super Mario Bros. / The Lost Levels: a brick broken from below sends
+  // Mario back down, as on the NES (All-Stars keeps him rising). BMF54123's
+  // brick fix, written into (or taken out of) the console's ROM.
+  void setNesBrickBounce(bool on);
 
   // ---- identification
   GameId current() const { return game_; }

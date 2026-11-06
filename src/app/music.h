@@ -8,6 +8,7 @@
 #include <vector>
 #include "app/menu.h"
 #include "core/apu.h"
+#include "core/msu1.h"
 
 class Audio;
 class Snes;
@@ -30,6 +31,12 @@ public:
   bool testRender(int bank, uint8_t id, double seconds, int* peak, double* rms);
   void stop();
   void playTrack(int bank, uint8_t id) { playId(bank, id, -1); }  // (the recording mode's "music")
+  // The MSU-1 music pack the game runs with (empty base: none): its tracks
+  // play in place of the songs it has (core/msu1.h, app/msupack.h).
+  void setMsu(const std::wstring& base, const std::string& name, float gain);
+  void setMsuGain(float gain) {
+    if (msu_) msu_->setGain(gain);
+  }
 
   struct Track {
     uint8_t id;
@@ -57,6 +64,10 @@ private:
   int afterTrack_ = 0;     // 0 stop, 1 repeat, 2 next
   float voiceLevel_[8] = {};
   std::vector<int16_t> buf_;
+  std::unique_ptr<Msu1> msu_;  // (the player's own chip: the game's is left alone)
+  std::string msuName_;
+  bool msuOn_ = false;    // the song playing is the pack's
+  bool usePack_ = true;   // the player's Music choice: the pack's songs or the originals
   // pending SFX port pulses
   struct Pulse {
     int port;

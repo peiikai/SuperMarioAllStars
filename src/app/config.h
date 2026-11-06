@@ -71,11 +71,15 @@ struct Config {
   bool highFrameRate = false;  // in-between pictures on the refreshes between the game's frames (90 Hz+ displays)
   int lastGame = 0;            // the launcher's card chosen last
   bool launcherAllStars = true;   // the launcher shows one card: Super Mario All-Stars (its own game select)
+  bool launcherCovers = false;    // the cards show the player's covers (covers folder) in place of live previews
+  bool launcherBackground = false;  // the launcher's background is the player's picture (covers/background.png)
+  bool launcherCoverFill = false;  // covers fill their frames (trimmed); else shown whole (the default)
   bool hudAnchor = true;
   bool dimWrap = true;         // SMB2: dim the margins of areas that wrap round
   int pillarbox = 1;           // 0 black, 1 blurred game, 2 dark frame
   int widescreenEnemies = 1;   // 1 = enemies active in full view
   bool coop = false;           // SMB1, LL, SMB3: two players at once, Luigi on controller 2
+  bool nesBrickBounce = false; // SMB1, LL: a brick broken from below sends Mario back down, as on the NES
   // Graphics
   int filter = kFilterSharp;
   int scanlines = 45;          // 0-100
@@ -93,9 +97,18 @@ struct Config {
   int volume = 80;
   bool muteUnfocused = false;
   int audioLatency = 64;       // ms
+  int musicVolume = 100;       // the games' music, percent (0: off, the sound effects kept)
+  int sfxVolume = 100;         // ... and their sound effects
+  std::wstring msuPack;        // an MSU-1 music pack: its folder in the msu folder, or empty (see app/msupack.h)
+  int msuVolume = 100;         // its music's volume, percent
   int interpolation = 0;       // 0 = hardware gaussian
   // Input
   int selectMode = 0;          // 0 = Select opens the menu, 1 = tap: game Select / hold: menu
+  bool checkUpdates = true;    // once a day, the launcher looks up the latest release on GitHub
+  std::string updateCheckedOn; // (the day it last did, "2026-11-06", and what it found, "v1.2")
+  std::string updateLatest;
+  int menuStyle = 0;           // the menus' look: 0 Storybook, 1 Retro, 2 Themed Dark, 3 Classic (Menu::Style)
+  bool confirmRight = false;   // menus: the right face button confirms, the bottom one backs out (Nintendo's way)
   int deadzone = 35;           // percent
   int touchMode = 0;           // on-screen controls (touch screens): 0 while touch is used, 1 always, 2 never
   int touchOpacity = 70;       // percent

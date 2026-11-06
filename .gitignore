@@ -27,3 +27,7 @@ rompath.txt
 
 # SDL2 source for the Android build (fetched by android/fetch_sdl.ps1)
 third_party/SDL2-*/
+
+# librashader for the macOS build (built by packaging/macos/build_librashader.sh)
+third_party/librashader/librashader.dylib
+third_party/librashader-src/

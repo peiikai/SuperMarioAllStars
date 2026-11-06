@@ -23,6 +23,7 @@ add_library(main SHARED
   ${SRC}/core/ppu.cpp
   ${SRC}/core/snes.cpp
   ${SRC}/core/rewind.cpp
+  ${SRC}/core/msu1.cpp
   ${SRC}/core/png.cpp
   ${SRC}/core/fileio.cpp
   ${SRC}/core/disasm.cpp
@@ -42,6 +43,10 @@ add_library(main SHARED
   ${SRC}/app/achstore.cpp
   ${SRC}/app/utf8.cpp
   ${SRC}/app/sys_posix.cpp
+  ${SRC}/app/imageload.cpp
+  ${SRC}/app/msupack.cpp
+  ${SRC}/app/achexport.cpp
+  ${SRC}/app/updatecheck.cpp
   ${SRC}/platform/android/app_android.cpp
   ${SRC}/platform/android/video_gles.cpp
   ${SRC}/platform/android/audio_sdl.cpp
@@ -49,7 +54,7 @@ add_library(main SHARED
   ${SRC}/platform/android/touch.cpp
 )
 set_target_properties(main PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
-target_include_directories(main PRIVATE ${SRC})
+target_include_directories(main PRIVATE ${SRC} ${ROOT}/third_party/stb)
 # (the emulation core needs optimising even in debug builds to run at full speed)
 target_compile_options(main PRIVATE -O2 -Wno-unused-parameter -Wno-sign-compare)
 target_link_libraries(main PRIVATE SDL2 GLESv3 android log)

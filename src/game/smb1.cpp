@@ -1049,7 +1049,11 @@ bool Smb1Engine::onExec(uint32_t pc) {
       int rel = (int8_t)ram(0x0079 + x) * 256 + ram(0x021a + x) - cam16_;
       // (its horizontal bits only: one above or below the screen still has
       // none, or a Podoboo far below met the player by its Y's low byte)
-      if (x < 6 && rel > -extL_ - 16 && rel < 256 + extR_) r.a &= 0xfff0;
+      // (All ten of All-Stars' enemy slots, not the NES's first six: a
+      // power-up in slot 9 past the screen's right edge had no box, and in
+      // co-op Luigi held out there couldn't take it, nor be met by an enemy
+      // in slots 6-9.)
+      if (x < 10 && rel > -extL_ - 16 && rel < 256 + extR_) r.a &= 0xfff0;
     }
     return false;
   }
@@ -1270,6 +1274,24 @@ void Smb1Engine::onWrite(uint32_t adr, uint8_t v, uint32_t pc) {
         relSeq_ = ++drawSeq_;
         relBy_[a - 0x03ad] = curRel_;
         relByFrame_[a - 0x03ad] = snes_.frameCount() + 1;
+        relV_[a - 0x03ad] = v;
+        return;
+      }
+    }
+    // A position worked out this frame, moved a few px by the code about to
+    // draw from it, with another index in X: a fireball's explosion, 4 px left
+    // (03:F4B6, X its fireball number, not its object's). Its true place moves
+    // with it (else, past the 4:3 screen's right edge, the burst was drawn
+    // 256 px back, behind Mario).
+    if (relByFrame_[a - 0x03ad] == snes_.frameCount() + 1) {
+      const int d = (int8_t)(uint8_t)(v - relV_[a - 0x03ad]);
+      if (std::abs(d) <= 8) {
+        curRel_ = relBy_[a - 0x03ad] + d;
+        curWrites_ = 24;
+        relValid_ = true;
+        relSeq_ = ++drawSeq_;
+        relBy_[a - 0x03ad] = curRel_;
+        relV_[a - 0x03ad] = v;
         return;
       }
     }
@@ -1390,6 +1412,7 @@ bool Smb1Engine::holdEnemy(int x) {
     fresh_ = 0;
     return false;
   }
+  if (x < 5 && leavesBuilt(x)) return true;
   if (x >= 10 || !(fresh_ & (1 << x))) return false;
   uint8_t flag = ram(0x10 + x), id = ram(0x1c + x);
   // (Koopas, Buzzy Beetles, Hammer Bros, Goombas, jumping Paratroopas, Spinies;
@@ -1400,6 +1423,23 @@ bool Smb1Engine::holdEnemy(int x) {
     fresh_ &= ~(1 << x);
     return false;
   }
+  return true;
+}
+
+// A kicked shell heading right out of view, past the built level: the wide
+// range keeps it further out than the 4:3 game would (which lets it go 72 px
+// past the screen, all built), into columns whose collision map is still the
+// level 512 px back, where it could meet walls that aren't there and come
+// back into view. It goes, as in the 4:3 game. (Not walkers: one turned by a
+// real wall off the view comes back, as on the console.)
+bool Smb1Engine::leavesBuilt(int x) {
+  uint8_t flag = ram(0x10 + x), id = ram(0x1c + x);
+  bool shell = id <= 0x03 && (ram(0x29 + x) & 0x80);  // (Koopas and Buzzy Beetles, kicked)
+  if (!flag || (flag & 0x80) || !shell || (int8_t)ram(0x5e + x) <= 0) return false;
+  int ex = (int8_t)ram(0x79 + x) * 256 + ram(0x021a + x);
+  if (ex + 16 <= parserPos() || ex - camera() < 256 + extR_) return false;
+  for (uint16_t a : {0x10, 0x1c, 0x29, 0x0110, 0x012e, 0x0792, 0x03a2}) snes_.wram[a + x] = 0;
+  snes_.wram[0x0257 + x] = 0x20;  // (as EraseEnemyObject)
   return true;
 }
 

@@ -515,3 +515,10 @@ Scene tricks:
 | SMB1/LL | **Death-warp**: set timer `$07E9-$07EB` to 002, wait 120 frames, poke `$075F` world, `$075C` level and `$0760` area. The next reload loads that area. |
 | SMB2 | **Death-warp**: set `$001E=2` (drop into a pit), then poke `$0533`/`$04E8`/`$0531` level, `$0534`/`$04E9`/`$0532` area and `$0635` world. Press A at character select. |
 | SMB3 | **Map teleport**: `$0047` X, `$0043` Y, then press A. **World select**: die (timer `$05EE-$05F0`=001) and poke `$0727` before the map reloads. |
+
+
+## Which voices are the music's ($1A)
+
+The driver keeps a bit mask of the voices that sound effects hold at ARAM **`$1A`**. Each effect port's handler sets its voice's bit when the effect starts and clears it when it ends (port 1 jump/skid: voice 7, `$150C` SET1 / `$154A` CLR1; port 0: voice 4, `$1085` / `$10D2`; port 3: voices 5 and 6, `$1407`/`$13C1` and `$1208`/`$1231`; others at `$1747`, `$1854`, `$15E4`). The music code reads it (`$0614`, `$06F7`, `$0990`, `$0A3A`, `$0E59`, ...) and leaves those voices alone, so at any moment the voices not in `$1A` are the music's. Found by diffing ARAM around a jump and tracing the SPC700 (smastool `aram`, `spctrace`).
+
+The port's Music Volume / Sound Effects Volume use it (`Apu` copies `$1A` into `Dsp::sfxVoices` before each sample, `Dsp` scales each voice's contribution to the main and echo mix): music off leaves exact silence between effects, and music-off plus effects-off adds up to the normal mix (verified on SMB1, LL, SMB2 and SMB3 clips; the games' RAM is unchanged).

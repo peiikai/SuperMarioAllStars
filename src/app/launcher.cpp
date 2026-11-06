@@ -1,4 +1,5 @@
 #include "app/launcher.h"
+#include "app/imageload.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -84,10 +85,65 @@ void Launcher::releaseGpu() {
     for (Preview& p : prev_)
       if (p.image) canvas_->freeImage(p.image);
     if (logo_) canvas_->freeImage(logo_);
+    for (Art& a : cover_)
+      if (a.image) canvas_->freeImage(a.image);
+    if (bgArt_.image) canvas_->freeImage(bgArt_.image);
   }
   floor_ = star_ = logo_ = 0;
   for (Preview& p : prev_) p.image = 0;
+  for (Art& a : cover_) a.image = 0;
+  bgArt_.image = 0;
   canvas_ = nullptr;
+}
+
+const char* Launcher::artName(int card) {
+  static const char* const kNames[kCards + 1] = {"smb1", "lostlevels", "smb2", "smb3", "allstars"};
+  return card >= 0 && card <= kCards ? kNames[card] : "background";
+}
+
+void Launcher::freeArt() {
+  for (Art* a : {&cover_[0], &cover_[1], &cover_[2], &cover_[3], &cover_[4], &bgArt_}) {
+    if (a->image && canvas_ && canvas_->epoch() == epoch_) canvas_->freeImage(a->image);
+    *a = Art{};
+  }
+}
+
+void Launcher::readArt(Art& a, const char* name) {
+  for (const wchar_t* ext : {L".png", L".jpg", L".jpeg", L".PNG", L".JPG", L".JPEG"}) {
+    std::wstring path = artDir_ + L"/" + std::wstring(name, name + strlen(name)) + ext;
+    // (a big picture shrunk: 1024 px is plenty for a card, 2048 for a background)
+    if (loadImageFile(path, &a == &bgArt_ ? 2048 : 1024, a.px, &a.w, &a.h)) return;
+  }
+  a = Art{};
+}
+
+void Launcher::setArt(const std::wstring& dir, bool covers, bool background, bool reload) {
+  if (!reload && dir == artDir_ && covers == useCovers_ && background == useBg_) return;
+  freeArt();
+  artDir_ = dir;
+  useCovers_ = covers;
+  useBg_ = background;
+  if (covers)
+    for (int i = 0; i <= kCards; i++) readArt(cover_[i], artName(i));
+  if (background) readArt(bgArt_, "background");
+  // (a card that has a cover now: its preview stopped, its sound with it)
+  for (int i = 0; i <= kCards; i++)
+    if (hasCover(i)) {
+      prev_[i].game.reset();
+      prev_[i].snes.reset();
+      prev_[i].ready = false;
+      prev_[i].bootFrames = 0;
+      prev_[i].shown = 0;
+      if (soundCard_ == i) soundCard_ = -1;
+    }
+}
+
+int Launcher::artImage(Canvas* cv, Art& a) {
+  if (!a.image && a.w > 0) {
+    a.image = cv->makeImage(a.w, a.h, true);
+    if (a.image) cv->updateImage(a.image, a.px.data(), a.w);
+  }
+  return a.image;
 }
 
 // (A new canvas (the device rebuilt): what was made on the old one is gone.)
@@ -96,6 +152,8 @@ void Launcher::useCanvas(Canvas* cv) {
   if (canvas_ != cv || !cv || cv->epoch() != epoch_) {
     floor_ = star_ = logo_ = 0;
     for (Preview& p : prev_) p.image = 0;
+    for (Art& a : cover_) a.image = 0;
+    bgArt_.image = 0;
   }
   canvas_ = cv;
   epoch_ = cv ? cv->epoch() : 0;
@@ -137,6 +195,8 @@ void Launcher::startPreview(int i) {
 
 void Launcher::stepPreview(Preview& p) {
   for (int k = 0; k < 2; k++) p.snes->input[k] = 0;
+  p.snes->apu.dsp.musicGain = musicGain_;
+  p.snes->apu.dsp.sfxGain = sfxGain_;
   p.game->beforeFrame();
   p.snes->runFrame();
   p.game->afterFrame();
@@ -144,7 +204,7 @@ void Launcher::stepPreview(Preview& p) {
   p.snes->takeAudio(buf_);
 }
 
-void Launcher::runPreviews(int frames, bool sound, Audio& audio) {
+void Launcher::runPreviews(int frames, bool sound, Audio& audio, double refreshHz) {
   // Starting: through the game select out of sight, the chosen card's first,
   // a few milliseconds of it per refresh.
   using clock = std::chrono::steady_clock;
@@ -153,6 +213,7 @@ void Launcher::runPreviews(int frames, bool sound, Audio& audio) {
   for (int k = 0; k < N; k++) {
     int i = cards_[(lastCard_ + k) % N];
     Preview& p = prev_[i];
+    if (hasCover(i)) continue;  // (its cover instead)
     if (!p.snes && rom_) startPreview(i);
     if (!p.snes || p.ready) continue;
     // (Booting out of sight, nothing drawn: the Steam Deck, at 60 Hz and a
@@ -172,20 +233,54 @@ void Launcher::runPreviews(int frames, bool sound, Audio& audio) {
     audio.flush();
     soundCard_ = want;
   }
-  for (int i : cards_) {
-    Preview& p = prev_[i];
-    if (!p.snes || !p.ready) continue;
+  // Four consoles drawing every frame made the launcher slow (144 Hz
+  // displays, phones). Drawing a picture is most of a frame's work: the
+  // chosen card runs and draws every frame, with its sound; the others run
+  // their frames (only the last of them drawn, and only one card's picture
+  // a frame, in turn: small on screen, a few times a second is plenty)
+  // within a share of the refresh's time. On a fast computer they keep up;
+  // on a slow device they fall behind a little rather than the launcher.
+  const int chosen = N > 0 ? cards_[(sel_ < N ? sel_ : lastCard_) % N] : -1;
+  int others[kCards + 1], nOthers = 0;
+  for (int i : cards_)
+    if (i != chosen && prev_[i].snes && prev_[i].ready) others[nOthers++] = i;
+  const int turn = frames > 0 && nOthers > 0 ? others[drawTurn_ % nOthers] : -1;
+  if (frames > 0) drawTurn_++;
+  if (chosen >= 0 && prev_[chosen].snes && prev_[chosen].ready) {
+    Preview& p = prev_[chosen];
+    p.owed = 0;
     for (int f = 0; f < frames; f++) {
+      const bool draw = f == frames - 1;
+      p.snes->ppu.skipRender = !draw;
       stepPreview(p);
-      if (i == soundCard_ && !buf_.empty()) {
+      if (draw) p.fresh = true;
+      if (chosen == soundCard_ && !buf_.empty()) {
         for (int16_t& s : buf_) s = (int16_t)(s * 0.55f);  // (quieter than the game)
         audio.push(buf_.data(), buf_.size() / 2, Snes::kSampleRate);
       }
     }
   }
+  const auto budget = std::chrono::microseconds(refreshHz > 0 ? (int)(0.35e6 / refreshHz) : 1 << 30);
+  const auto from = clock::now();
+  for (int n = 0; n < nOthers; n++) {
+    Preview& p = prev_[others[n]];
+    p.owed = std::min(p.owed + frames, 3);  // (fallen further behind: it just runs slower)
+  }
+  for (int n = 0; n < nOthers; n++) {
+    const int i = others[(drawTurn_ + n) % nOthers];
+    Preview& p = prev_[i];
+    while (p.owed > 0 && clock::now() - from < budget) {
+      const bool draw = p.owed == 1 && i == turn;
+      p.snes->ppu.skipRender = !draw;
+      stepPreview(p);
+      p.owed--;
+      if (draw) p.fresh = true;
+    }
+  }
 }
 
 Launcher::Action Launcher::update(const MenuInput& in, float dt) {
+  time_ += dt;
   const int N = (int)cards_.size();  // cards 0..N-1, buttons N..N+4
   // A held direction moves once, then repeats, slower than the menus (moved
   // every refresh, a pad's stick flew along the cards).
@@ -223,6 +318,31 @@ Launcher::Action Launcher::update(const MenuInput& in, float dt) {
 // (drawn here: no picture from the game).
 void Launcher::drawBackground(Menu& menu, float W, float H) {
   Canvas* cv = menu.canvas();
+  if (useBg_ && bgArt_.w > 0) {
+    // The player's picture: filling the window (its middle, the rest cut
+    // off; not stretched), darkened a little and shaded at the bottom, so
+    // the title, cards and buttons read over anything.
+    if (int img = artImage(cv, bgArt_)) {
+      const float s = std::max(W / bgArt_.w, H / bgArt_.h), dw = bgArt_.w * s, dh = bgArt_.h * s;
+      cv->fillRect(rectF(0, 0, W, H), argb(0xFF000000));
+      cv->pushClip(rectF(0, 0, W, H));
+      cv->drawImage(img, rectF((W - dw) * 0.5f, (H - dh) * 0.5f, (W + dw) * 0.5f, (H + dh) * 0.5f), 1.0f, true);
+      cv->popClip();
+      cv->fillRect(rectF(0, 0, W, H), colorF(0.0f, 0.0f, 0.03f, 0.35f));
+      const float shade = H * 0.25f;
+      for (float y = H - shade; y < H; y += 2) {
+        float a = (y - (H - shade)) / shade;
+        cv->fillRect(rectF(0, y, W, y + 2), colorF(0.0f, 0.0f, 0.03f, 0.75f * a * a));
+      }
+      // (and at the top, behind the logo, the title and the line under it)
+      const float top = H * 0.24f;
+      for (float y = 0; y < top; y += 2) {
+        float a = 1.0f - y / top;
+        cv->fillRect(rectF(0, y, W, y + 2), colorF(0.0f, 0.0f, 0.03f, 0.7f * a * (2.0f - a) * 0.75f));
+      }
+      return;
+    }
+  }
   const float horizon = std::round(H * 0.6f);
   const ColorF skyTop = argb(0xFF070F2C), skyLow = argb(0xFF1D3B88), floorDark = argb(0xFF132A63),
                floorLight = argb(0xFF3459B2);
@@ -312,21 +432,38 @@ void Launcher::draw(Menu& menu, int w, int h) {
   const float fSmall = std::max(8.0f, std::round(base / 40)), fBody = std::max(8.0f, std::round(base / 28)),
               fTitle = std::max(8.0f, std::round(base / 16)), fHuge = std::max(8.0f, std::round(base / 9));
   const auto lh = [](float size, float scale = 1.0f) { return size * scale * kLine; };
+  // (the canvas's own text: the menus' style is for the menus and the buttons below)
   const auto measure = [&](const std::string& t, float size, bool bold) {
-    return menu.measure(Menu::widen(t), size, bold ? kWeightBold : kWeightNormal);
+    return t.empty() ? 0.0f : cv->measure(Menu::widen(t), size, bold ? kWeightBold : kWeightNormal);
   };
   // text from its top edge: left, centred on x, or right
+  // (over the player's own background picture, text gets a dark outline: it reads over anything)
+  const bool customBg = useBg_ && bgArt_.w > 0;
   const auto text = [&](float x, float y, const std::string& t, float size, bool bold, ColorF c, int align,
                         float scale = 1.0f) {
     float sz = size * scale, l = lh(size, scale);
     RectF r = align == 0   ? rectF(x, y, x + 20000, y + l)
                     : align == 1 ? rectF(x - 10000, y, x + 10000, y + l)
                                  : rectF(x - 20000, y, x, y + l);
-    menu.text(Menu::widen(t), r, sz, bold ? kWeightBold : kWeightNormal, c,
-              align == 0   ? kAlignLeading
-              : align == 1 ? kAlignCenter
-                           : kAlignTrailing,
-              kParaNear);
+    if (customBg) {
+      const std::wstring ws = Menu::widen(t);
+      const float o = std::max(1.0f, sz * 0.07f);
+      const TextAlign al = align == 0 ? kAlignLeading : align == 1 ? kAlignCenter : kAlignTrailing;
+      for (int k = 0; k < 8; k++) {
+        const float ang = k * 3.14159265f / 4;
+        cv->text(ws, rectF(r.left + std::cos(ang) * o, r.top + std::sin(ang) * o, r.right + std::cos(ang) * o,
+                           r.bottom + std::sin(ang) * o),
+                 sz, bold ? kWeightBold : kWeightNormal, colorF(0, 0, 0.02f, 0.8f * c.a), al, kParaNear);
+      }
+      // (the grey lines lighter, the outline doing the separating)
+      if (c.r < 0.75f && std::fabs(c.r - c.b) < 0.2f && std::fabs(c.g - c.b) < 0.2f)
+        c = colorF(c.r + (1 - c.r) * 0.55f, c.g + (1 - c.g) * 0.55f, c.b + (1 - c.b) * 0.55f, c.a);
+    }
+    cv->text(Menu::widen(t), r, sz, bold ? kWeightBold : kWeightNormal, c,
+             align == 0   ? kAlignLeading
+             : align == 1 ? kAlignCenter
+                          : kAlignTrailing,
+             kParaNear);
   };
   const auto fill = [&](RectF r, ColorF c) { cv->fillRect(r, c); };
   const ColorF acc = accent();
@@ -400,12 +537,46 @@ void Launcher::draw(Menu& menu, int w, int h) {
       linkHit_ = rectF(m, m, m + bw, m + lhgt + H * 0.004f + lh(fs));
     }
   }
+  // A newer release: a badge, top right (it opens its page)
+  updateHit_ = RectF{};
+  if (!updateTag_.empty()) {
+    // (beside the title if there's room; else, shorter, under the Patreon link)
+    const std::string ver = updateTag_.size() > 1 && (updateTag_[0] == 'v' || updateTag_[0] == 'V') ? updateTag_.substr(1)
+                                                                                                    : updateTag_;
+    std::string t = "Update available: v" + ver;
+    const float fs = fSmall, bh = lh(fs) * 1.45f, m = logoM;
+    float bw = measure(t, fs, true) + bh * 1.7f;
+    RectF r;
+    if (W - m - bw >= (W + tw) * 0.5f + m) {
+      r = rectF(W - m - bw, H * 0.075f, W - m, H * 0.075f + bh);
+    } else {
+      t = "v" + ver + " available";
+      bw = measure(t, fs, true) + bh * 1.7f;
+      const float top = linkHit_.bottom > linkHit_.top ? linkHit_.bottom + H * 0.012f : m;
+      r = rectF(m, top, m + bw, top + bh);
+    }
+    const float pulse = 0.5f + 0.5f * std::sin(time_ * 3.0f);
+    menu.fillRound(rectF(r.left - 3, r.top - 3, r.right + 3, r.bottom + 3), bh * 0.5f + 3,
+                   colorF(1.0f, 0.85f, 0.25f, 0.25f + 0.25f * pulse));
+    menu.fillRound(r, bh * 0.5f, argb(0xFFFFD400));
+    menu.outlineRound(r, bh * 0.5f, std::max(2.0f, H / 360.0f), argb(0xFF3A1D0E));
+    menu.star(r.left + bh * 0.55f, (r.top + r.bottom) * 0.5f, bh * 0.28f, argb(0xFFFFFFFF), argb(0xFF3A1D0E),
+              std::max(1.0f, H / 700.0f));
+    cv->text(Menu::widen(t), rectF(r.left + bh * 1.0f, r.top, r.right - bh * 0.5f, r.bottom), fs, kWeightBold,
+             argb(0xFF3A1D0E), kAlignCenter, kParaCenter);
+    updateHit_ = r;
+  }
   text(W * 0.5f, ty0, std::string("Super Nintendo classics  \xE2\x80\xA2  ") + kEdition + "  \xE2\x80\xA2  v" + version_, fBody, false,
        argb(0xFF9AA4BA), 1);
   ty0 += lh(fBody);
 
   // Cards
-  const float aspect = (float)(256.0 * par_ / 224.0);
+  // (the cards' picture frames: the game's screen's shape; with covers, square:
+  // upright box art, the frames fill better)
+  const float screenAspect = (float)(256.0 * par_ / 224.0);
+  bool anyCover = false;
+  for (int k : cards_) anyCover = anyCover || hasCover(k);
+  const float aspect = anyCover ? 1.0f : screenAspect;
   const float top = ty0 + H * 0.045f;
   const float gap = W * 0.025f;
   const float rad0 = H * 0.02f;
@@ -447,7 +618,22 @@ void Launcher::draw(Menu& menu, int w, int h) {
     pr.right = pr.left + pw;
     pr.bottom = pr.top + pw / aspect;
     menu.fillRound(pr, rad * 0.5f, argb(0xFF0A0D14));
-    if (pv.snes && pv.ready) {
+    if (hasCover(cards_[i]) && haveRom_) {
+      // The player's cover, filling its frame (what's beyond it trimmed, a
+      // tall cover's mostly from the bottom: box art's logo is at the top),
+      // or whole (the dark backdrop either side); dimmed when not chosen.
+      Art& a = cover_[cards_[i]];
+      if (int img = artImage(cv, a)) {
+        const float aw = pr.right - pr.left, ah = pr.bottom - pr.top;
+        const float s = coverFill_ ? std::max(aw / a.w, ah / a.h) : std::min(aw / a.w, ah / a.h);
+        const float dw = a.w * s, dh = a.h * s;
+        const float x = pr.left + (aw - dw) * 0.5f, y = pr.top + (ah - dh) * (dh > ah ? 0.25f : 0.5f);
+        cv->pushClip(pr);
+        cv->drawImage(img, rectF(x, y, x + dw, y + dh), 1.0f, true);
+        cv->popClip();
+        if (an < 0.99f) fill(pr, colorF(0, 0, 0, 0.35f * (1.0f - an)));
+      }
+    } else if (pv.snes && pv.ready) {
       // The game's 256 px picture (its frame buffer is wider: the margins either side).
       int fh = pv.snes->ppu.frameHeight();
       if (pv.image && pv.imageH != fh) {
@@ -457,12 +643,22 @@ void Launcher::draw(Menu& menu, int w, int h) {
       if (!pv.image) {
         pv.image = cv->makeImage(256, fh);
         pv.imageH = fh;
+        pv.fresh = true;
       }
       if (pv.image) {
-        cv->updateImage(pv.image, pv.snes->ppu.frame + kMaxExt, kLineW);
+        // (only a picture drawn since: the others are as they were)
+        if (pv.fresh) cv->updateImage(pv.image, pv.snes->ppu.frame + kMaxExt, kLineW);
+        pv.fresh = false;
         // (whole multiples of the picture stay sharp; in between, smooth)
-        float scale = (pr.bottom - pr.top) / fh;
-        cv->drawImage(pv.image, pr, pv.shown, scale < 2.0f);
+        // (in a square frame beside covers: the picture its own shape, centred)
+        RectF ip = pr;
+        if (aspect != screenAspect) {
+          const float ih = (pr.right - pr.left) / screenAspect, my = (pr.top + pr.bottom) * 0.5f;
+          ip.top = my - ih * 0.5f;
+          ip.bottom = my + ih * 0.5f;
+        }
+        float scale = (ip.bottom - ip.top) / fh;
+        cv->drawImage(pv.image, ip, pv.shown, scale < 2.0f);
         if (an < 0.99f) fill(pr, colorF(0, 0, 0, 0.35f * (1.0f - an)));
       }
     } else if (pv.snes) {
@@ -511,11 +707,24 @@ void Launcher::draw(Menu& menu, int w, int h) {
                       withA(an > 0.01f ? c : argb(0xFF2A3040), 0.6f + 0.4f * an));
   }
 
-  // Buttons
+  // Buttons, in the menus' style: Storybook's cream pills outlined in brown
+  // (yellow with a star when chosen) and Luckiest Guy; Retro's boxes with a
+  // gold arrow and pixels; Themed Dark's pills with a star and Luckiest Guy;
+  // Classic's plain pills.
+  const int style = menu.style;
+  const bool story = style == Menu::kStorybook, retro = style == Menu::kRetro, themed = style == Menu::kThemedDark;
+  const bool display = story || themed;  // (labels in the display face)
+  const ColorF ink = argb(0xFF3A1D0E), gold = argb(0xFFFCBC3C);
+  const float inkW = std::max(2.0f, H / 300.0f);
   const float bh = lh(fBody) * 1.6f;
+  const auto labelSize = [&](float scale) { return (display ? fBody * 1.12f : retro ? fBody * 0.8f : fBody) * scale; };
+  const auto labelW = [&](const char* t, float scale) {
+    const std::wstring w = Menu::widen(t);
+    return display || retro ? menu.displayMeasure(w, labelSize(scale)) : measure(t, fBody * scale, false);
+  };
   float bws[kButtons], total = 0;
   for (int i = 0; i < kButtons; i++) {
-    bws[i] = measure(kButtonNames[i], fBody, false) + bh * 1.4f;
+    bws[i] = labelW(kButtonNames[i], 1.0f) + bh * (story || themed || retro ? 1.9f : 1.4f);
     total += bws[i];
   }
   float bgap = W * 0.02f;
@@ -530,14 +739,60 @@ void Launcher::draw(Menu& menu, int w, int h) {
     RectF br = rectF(bx, by + bh * (1.0f - bs) * 0.5f, bx + bws[i], 0);
     br.bottom = br.top + bh * bs;
     buttonHits_[i] = br;
-    menu.fillRound(br, (br.bottom - br.top) * 0.5f, lerp(argb(0xFF1C2230), acc, an * 0.85f));
-    text((br.left + br.right) * 0.5f, br.top + ((br.bottom - br.top) - lh(fBody, bs)) * 0.5f, kButtonNames[i], fBody,
-         false, an > 0.5f ? argb(0xFF10131A) : argb(0xFFD8DDE8), 1, bs);
+    const float bhh = br.bottom - br.top, cy = (br.top + br.bottom) * 0.5f;
+    const std::wstring name = Menu::widen(kButtonNames[i]);
+    // (the label's box: past the star or arrow when chosen)
+    RectF lr = br;
+    if (story) {
+      menu.fillRound(br, bhh * 0.5f, lerp(argb(0xFFFFF8E4), argb(0xFFFFD400), an));
+      menu.outlineRound(br, bhh * 0.5f, inkW, ink);
+      if (an > 0.01f) {
+        menu.star(br.left + bhh * 0.55f, cy + std::sin(time_ * 5.0f) * bhh * 0.04f, bhh * 0.3f * an,
+                  argb(0xFFFFFFFF), ink, inkW * 0.7f);
+        lr.left += bhh * 0.45f * an;
+      }
+      menu.displayText(name, lr, labelSize(bs), ink, ColorF{}, 0.0f, kAlignCenter);
+    } else if (retro) {
+      cv->fillRect(br, argb(0xFF000000));
+      cv->strokeRect(br, inkW, an > 0.5f ? gold : argb(0xFFFCFCFC));
+      if (an > 0.5f) {
+        const float cs = labelSize(bs) * 0.5f, ax = br.left + bhh * 0.35f;
+        const PointF tri[3] = {{ax, cy - cs * 0.7f}, {ax + cs, cy}, {ax, cy + cs * 0.7f}};
+        cv->fillPolygon(tri, 3, gold);
+        lr.left += bhh * 0.45f;
+      }
+      menu.displayText(name, lr, labelSize(bs), an > 0.5f ? gold : argb(0xFFFCFCFC), ColorF{}, 0.0f, kAlignCenter);
+    } else {
+      menu.fillRound(br, bhh * 0.5f, lerp(argb(0xFF1C2230), acc, an * 0.85f));
+      if (themed) {
+        if (an > 0.01f) {
+          menu.star(br.left + bhh * 0.5f, cy, bhh * 0.26f * an, argb(0xFFFFD83D), argb(0xFFB8860B),
+                    std::max(1.0f, H / 900.0f));
+          lr.left += bhh * 0.4f * an;
+        }
+        menu.displayText(name, lr, labelSize(bs), an > 0.5f ? argb(0xFF10131A) : argb(0xFFFFFFFF), ColorF{}, 0.0f,
+                         kAlignCenter);
+      } else {
+        text((br.left + br.right) * 0.5f, br.top + (bhh - lh(fBody, bs)) * 0.5f, kButtonNames[i], fBody, false,
+             an > 0.5f ? argb(0xFF10131A) : argb(0xFFD8DDE8), 1, bs);
+      }
+    }
     bx += bws[i] + bgap;
   }
-  text(W * 0.5f, H - lh(fSmall) * 1.6f,
-       hint_.empty() ? "\xE2\x86\x90\xE2\x86\x92 Choose    Enter / (A) Play    F11 Fullscreen    Esc Quit" : hint_, fSmall,
-       false, argb(0xFFA3B0CC), 1);
+#ifdef __APPLE__
+#define FULLSCREEN_HINT "Ctrl+Cmd+F Fullscreen"
+#else
+#define FULLSCREEN_HINT "F11 Fullscreen"
+#endif
+  const std::string keys = !hint_.empty()  ? hint_
+                           : confirmRight_ ? "\xE2\x86\x90\xE2\x86\x92 Choose    Enter / (B) Play    " FULLSCREEN_HINT "    Esc Quit"
+                                           : "\xE2\x86\x90\xE2\x86\x92 Choose    Enter / (A) Play    " FULLSCREEN_HINT "    Esc Quit";
+#undef FULLSCREEN_HINT
+  if (retro)
+    menu.pixelText(Menu::widen(keys), rectF(0, H - lh(fSmall) * 1.6f, W, H - lh(fSmall) * 0.6f), fSmall * 0.78f,
+                   argb(0xFFBCBCBC), kAlignCenter, kParaNear);
+  else
+    text(W * 0.5f, H - lh(fSmall) * 1.6f, keys, fSmall, story, argb(0xFFA3B0CC), 1);
 }
 
 bool Launcher::overLink(float x, float y) const {
@@ -545,8 +800,9 @@ bool Launcher::overLink(float x, float y) const {
 }
 
 Launcher::Action Launcher::tap(float x, float y) {
-  if (overLink(x, y)) return kPatreon;
   auto in = [&](const RectF& r) { return x >= r.left && x < r.right && y >= r.top && y < r.bottom; };
+  if (!updateTag_.empty() && in(updateHit_)) return kUpdate;
+  if (overLink(x, y)) return kPatreon;
   const int N = (int)cards_.size();
   for (int i = 0; i < (int)cardHits_.size() && i < N; i++)
     if (in(cardHits_[i])) {

@@ -79,6 +79,19 @@ bool listFiles(const std::wstring& dir, std::vector<std::wstring>& names) {
   return true;
 }
 
+bool listDirs(const std::wstring& dir, std::vector<std::wstring>& names) {
+  DIR* d = opendir(narrowUtf8(dir).c_str());
+  if (!d) return false;
+  while (dirent* e = readdir(d)) {
+    if (e->d_name[0] == '.') continue;
+    std::wstring n = widenUtf8(e->d_name);
+    struct stat st;
+    if (stat(narrowUtf8(pathJoin(dir, n)).c_str(), &st) == 0 && S_ISDIR(st.st_mode)) names.push_back(n);
+  }
+  closedir(d);
+  return true;
+}
+
 std::string timeText(const char* fmt) {
   time_t t = time(nullptr);
   tm lt;

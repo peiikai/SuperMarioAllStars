@@ -162,6 +162,12 @@ void Apu::runTo(uint64_t target) {
     while (sampleCounter_ >= 32) {
       sampleCounter_ -= 32;
       int16_t l, rr;
+      // (All-Stars' sound driver, N-SPC "Ver S1.20", the same in all five
+      // titles, marks the voices a sound effect holds in its RAM at $1A: each
+      // effect port's handler sets its voice's bit while the effect plays and
+      // clears it after, and the music code leaves those voices alone. So
+      // the rest are the music's. See docs/re/sound.md.)
+      if (!ipl && (dsp.musicGain != 256 || dsp.sfxGain != 256)) dsp.sfxVoices = ram[0x1a];
       dsp.runSample(&l, &rr);
       if (generateAudio) {
         samples.push_back(l);

@@ -8,6 +8,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <winhttp.h>
 #include <ctime>
 
 std::wstring pathJoin(const std::wstring& dir, const std::wstring& name) {
@@ -83,6 +84,17 @@ bool listFiles(const std::wstring& dir, std::vector<std::wstring>& names) {
   return true;
 }
 
+bool listDirs(const std::wstring& dir, std::vector<std::wstring>& names) {
+  WIN32_FIND_DATAW fd;
+  HANDLE h = FindFirstFileW(pathJoin(dir, L"*").c_str(), &fd);
+  if (h == INVALID_HANDLE_VALUE) return false;
+  do {
+    if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && fd.cFileName[0] != L'.') names.push_back(fd.cFileName);
+  } while (FindNextFileW(h, &fd));
+  FindClose(h);
+  return true;
+}
+
 std::string timeText(const char* fmt) {
   time_t t = time(nullptr);
   tm lt;
@@ -96,3 +108,46 @@ void openUrl(const char* url) {
   std::wstring w(url, url + strlen(url));
   ShellExecuteW(nullptr, L"open", w.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 }
+
+bool httpGet(const char* url, std::string& out) {
+  out.clear();
+  std::wstring w(url, url + strlen(url));
+  wchar_t host[256], path[2048];
+  URL_COMPONENTS uc = {};
+  uc.dwStructSize = sizeof uc;
+  uc.lpszHostName = host;
+  uc.dwHostNameLength = 256;
+  uc.lpszUrlPath = path;
+  uc.dwUrlPathLength = 2048;
+  if (!WinHttpCrackUrl(w.c_str(), 0, 0, &uc)) return false;
+  HINTERNET s = WinHttpOpen(L"SuperMarioAllStars-port", WINHTTP_ACCESS_TYPE_DEFAULT_PROXY, WINHTTP_NO_PROXY_NAME,
+                            WINHTTP_NO_PROXY_BYPASS, 0);
+  if (!s) return false;
+  WinHttpSetTimeouts(s, 8000, 8000, 8000, 8000);
+  HINTERNET c = WinHttpConnect(s, host, uc.nPort, 0);
+  HINTERNET r = c ? WinHttpOpenRequest(c, L"GET", path, nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                       uc.nScheme == INTERNET_SCHEME_HTTPS ? WINHTTP_FLAG_SECURE : 0)
+                  : nullptr;
+  bool ok = r && WinHttpSendRequest(r, L"Accept: application/vnd.github+json\r\n", (DWORD)-1L, WINHTTP_NO_REQUEST_DATA,
+                                    0, 0, 0) &&
+            WinHttpReceiveResponse(r, nullptr);
+  DWORD status = 0, size = sizeof status;
+  if (ok)
+    WinHttpQueryHeaders(r, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_HEADER_NAME_BY_INDEX, &status,
+                        &size, WINHTTP_NO_HEADER_INDEX);
+  ok = ok && status == 200;
+  while (ok && out.size() < (1u << 20)) {
+    DWORD avail = 0, got = 0;
+    if (!WinHttpQueryDataAvailable(r, &avail) || !avail) break;
+    const size_t at = out.size();
+    out.resize(at + avail);
+    if (!WinHttpReadData(r, &out[at], avail, &got)) ok = false;
+    out.resize(at + got);
+  }
+  if (r) WinHttpCloseHandle(r);
+  if (c) WinHttpCloseHandle(c);
+  WinHttpCloseHandle(s);
+  return ok && !out.empty();
+}
+
+void openFolder(const std::wstring& path) { ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL); }

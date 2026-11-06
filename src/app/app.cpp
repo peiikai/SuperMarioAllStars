@@ -9,13 +9,15 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include "app/achexport.h"
+#include "app/msupack.h"
 #include "app/sys.h"
 #include "app/vkeys.h"
 #include "core/fileio.h"
 #include "core/png.h"
 
 const wchar_t* kAppTitle = L"Super Mario All-Stars";
-const char* kAppVersion = "1.0";
+const char* kAppVersion = "1.1.1";
 namespace {
 const char* kExpectedTitle = "SUPER MARIO ALL_STARS";
 constexpr uint32_t kKnownCrc = 0x925637c7;  // Super Mario All-Stars (USA)
@@ -90,7 +92,11 @@ bool App::loadRom() {
   romExact = exact;
   game.reset();  // (before the Snes it points at: its destructor uses it)
   snes = std::make_unique<Snes>();
-  if (!snes->loadRom(data)) {
+  // (the console's copy patched for an MSU-1 pack if one is chosen; the
+  // launcher's previews run the ROM as it is)
+  std::vector<uint8_t> run = data;
+  applyMsu(run);
+  if (!snes->loadRom(run)) {
     snes.reset();
     return false;
   }
@@ -102,9 +108,110 @@ bool App::loadRom() {
   return true;
 }
 
+// The chosen MSU-1 pack (see app/msupack.h): its patch applied to the
+// console's ROM and the chip attached, or why not (msuStatus).
+void App::applyMsu(std::vector<uint8_t>& rom) {
+  if (msuDir.empty()) msuDir = pathJoin(exeDir, L"msu");
+  makeDir(msuDir);
+  msuLoaded = cfg.msuPack;
+  msuStatus.clear();
+  msuBase.clear();
+  if (cfg.msuPack.empty()) return;
+  MsuPack pk;
+  std::string err;
+  std::vector<uint8_t> patch;
+  if (findMsuPack(msuDir, cfg.msuPack, pk, &err)) {
+    if (!readFile(pk.patch, patch, 16u << 20)) {
+      err = "its patch can't be read";
+    } else {
+      std::vector<uint8_t> patched = rom;
+      if ((patched.size() & 0x3ff) == 0x200) patched.erase(patched.begin(), patched.begin() + 0x200);
+      if (applyRomPatch(patch, patched, &err)) {
+        rom.swap(patched);
+        snes->msu = std::make_unique<Msu1>();
+        snes->msu->open(pk.base);
+        snes->msu->setGain(cfg.msuVolume / 100.0f * cfg.musicVolume / 100.0f);
+        msuBase = pk.base;
+        msuStatus = "Playing " + narrow(cfg.msuPack) + ": " + std::to_string(pk.tracks) + " tracks, patched with " +
+                    narrow(pathName(pk.patch)) + ".";
+        logf("MSU-1 pack %s: %d tracks, patch %s", narrow(cfg.msuPack).c_str(), pk.tracks,
+             narrow(pk.patch).c_str());
+        return;
+      }
+    }
+  }
+  msuStatus = "Not used: " + err + ".";
+  logf("MSU-1 pack %s not used: %s", narrow(cfg.msuPack).c_str(), err.c_str());
+}
+
+// Another pack chosen: the console is rebuilt with it (outside a game: the
+// launcher shows). Save files are kept; a game's save states belong with the
+// pack they were made with.
+void App::reloadForMsu() {
+  if (!snes || cfg.msuPack == msuLoaded) return;
+  saveSram();
+  if (loadRom()) romReady();
+}
+
+// Updates: once a day (or on Check Now) the latest release's tag is looked up
+// in the background; newer than this version, the launcher shows a badge
+// (and Options a "Get Version" button) that opens its page.
+void App::checkForUpdate(bool manual) {
+  if (test.on || test.runSeconds > 0) return;
+#ifdef _WIN32
+  if (at.on) {  // (the recording mode: no network, only what an earlier check found)
+    applyUpdateTag(cfg.checkUpdates ? cfg.updateLatest : std::string());
+    return;
+  }
+#endif
+  if (!manual && !cfg.checkUpdates) return;
+  const std::string today = timeText("%Y-%m-%d");
+  if (!manual && cfg.updateCheckedOn == today) {
+    applyUpdateTag(cfg.updateLatest);  // (checked today already)
+    return;
+  }
+  updateManual = manual;
+  updater.start();
+}
+
+void App::applyUpdateTag(const std::string& tag) {
+  const bool newer = !tag.empty() && UpdateCheck::isNewer(tag, kAppVersion);
+  updateTag = newer && (cfg.checkUpdates || updateManual) ? tag : std::string();
+  launcher.setUpdate(updateTag);
+  if (!updateTag.empty() && !updateTold) {
+    updateTold = true;
+    menu.notify("Version " + updateVersion() + " is available - select the badge, or Options > Get Version " +
+                    updateVersion(),
+                6.0f);
+  }
+}
+
+void App::updateTick() {
+  if (!updateStarted) {
+    updateStarted = true;
+    checkForUpdate(false);
+  }
+  std::string tag;
+  if (!updater.poll(&tag)) return;
+  const bool manual = updateManual;
+  if (!tag.empty()) {
+    cfg.updateCheckedOn = timeText("%Y-%m-%d");
+    cfg.updateLatest = tag;
+    if (!test.on && test.runSeconds <= 0) cfg.save(configPath);
+    if (manual) updateTold = false;
+    applyUpdateTag(tag);
+    if (manual && updateTag.empty()) menu.notify(std::string("You have the latest version (") + kAppVersion + ")", 4.0f);
+  } else if (manual) {
+    menu.notify("Couldn't reach GitHub to check for updates", 4.0f);
+  }
+  updateManual = false;
+  if (menu.open()) menu.refresh();
+}
+
 // After the ROM is loaded (at start, or found later while the launcher shows).
 void App::romReady() {
   music.init(snes.get(), game.get(), &audio);
+  music.setMsu(msuBase, narrow(msuLoaded), cfg.msuVolume / 100.0f);  // (the Music Player plays the pack too)
   achNewRun(cfg.achievements);
   applyConfig();
   if (!test.on && test.runSeconds <= 0)
@@ -135,6 +242,8 @@ void App::launchGame(GameId g) {
 #endif
     return;
   }
+  reloadForMsu();  // (a pack chosen in a game: in use from this start)
+  if (!snes) return;
   playing = g;
   for (int i = 0; i < Launcher::kCards; i++)
     if (Launcher::cardGame(i) == g) cfg.lastGame = i;
@@ -176,6 +285,7 @@ void App::returnToLauncher() {
   menu.closeAll();
   launcher.selectGame(playing);
   inLauncher = true;
+  reloadForMsu();
 }
 
 // A display refresh on the launcher: its cards and buttons (or a menu page
@@ -204,6 +314,12 @@ void App::frameLauncher(double dt, int gameFrames) {
         else menu.notify("ROM not found - see the game cards");
         break;
       case Launcher::kCredits: push(pageCredits()); break;
+      case Launcher::kUpdate:
+        if (!updateTag.empty()) {
+          openUrl(UpdateCheck::pageFor(updateTag).c_str());
+          menu.notify("Opened the version " + updateVersion() + " download page in your browser");
+        }
+        break;
       case Launcher::kPatreon:
         openUrl("https://www.patreon.com/TeamRedTail");
         menu.notify("Opened Patreon in your browser");
@@ -222,7 +338,7 @@ void App::frameLauncher(double dt, int gameFrames) {
   if (menuOpen && !menu.open()) cfg.save(configPath);
   if (snes) music.update(dt, menu.open());
   // (the chosen card's sound, not under a menu page: the music player's there)
-  launcher.runPreviews(gameFrames, !menu.open() && !(cfg.muteUnfocused && !focused), audio);
+  launcher.runPreviews(gameFrames, !menu.open() && !(cfg.muteUnfocused && !focused), audio, pacing.hz);
 }
 
 // Black frame insertion's state, beside its switch.
@@ -355,14 +471,32 @@ void App::screenshot() {
 // Display
 
 
+void App::applyLauncherArt(bool reload) {
+  launcher.setCoverFill(cfg.launcherCoverFill);
+  launcher.setArt(pathJoin(exeDir, L"covers"), cfg.launcherCovers, cfg.launcherBackground, reload);
+}
+
 void App::applyConfig() {
+  applyLauncherArt();
   audio.setVolume(cfg.volume / 100.0f);
   audio.setLatency(cfg.audioLatency);
+  menu.confirmRight = cfg.confirmRight;
+  menu.style = cfg.menuStyle;
+  launcher.setConfirmRight(cfg.confirmRight);
   if (snes) snes->ppu.noSpriteLimit = cfg.noSpriteLimit;
+  if (snes) {
+    snes->apu.dsp.musicGain = cfg.musicVolume * 256 / 100;
+    snes->apu.dsp.sfxGain = cfg.sfxVolume * 256 / 100;
+  }
+  launcher.setGains(cfg.musicVolume * 256 / 100, cfg.sfxVolume * 256 / 100);
+  // (a music pack's songs are music too: its own volume, times the music's)
+  if (snes && snes->msu) snes->msu->setGain(cfg.msuVolume / 100.0f * cfg.musicVolume / 100.0f);
+  music.setMsuGain(cfg.msuVolume / 100.0f);
   if (game) {
     game->hudAnchor = cfg.hudAnchor;
     game->dimWrap = cfg.dimWrap;
     game->enemyRange = cfg.widescreenEnemies != 0;
+    game->setNesBrickBounce(cfg.nesBrickBounce);
     game->coop = cfg.coop;
     game->setCheats(achLocked() ? 0 : cfg.cheats);  // (achievements on: no cheats)
     game->playerPalette = cfg.playerPalette;
@@ -574,8 +708,10 @@ MenuInput App::menuInput() {
     nav[1] |= p->buttons[11] || p->axes[1] > dz;
     nav[2] |= p->buttons[12] || p->axes[0] < -dz;
     nav[3] |= p->buttons[13] || p->axes[0] > dz;
-    nav[4] |= p->buttons[0] || p->buttons[7];
-    nav[5] |= p->buttons[1] || p->buttons[6];
+    // (face buttons by position: 0 bottom, 1 right; Menu Buttons picks which confirms)
+    const int ok = cfg.confirmRight ? 1 : 0;
+    nav[4] |= p->buttons[ok] || p->buttons[7];
+    nav[5] |= p->buttons[1 - ok] || p->buttons[6];
     nav[6] |= p->buttons[4];
     nav[7] |= p->buttons[5];
   }
@@ -781,9 +917,18 @@ std::shared_ptr<MenuPage> App::pageOptions() {
                                          "Filters, CRT effects and sprite options."));
     pg.items.push_back(MenuItem::submenu("Colour", [this]() { menu.push(pageColor()); },
                                          "Colour profiles, picture adjustments and accessibility filters."));
-    pg.items.push_back(MenuItem::submenu("Audio", [this]() { menu.push(pageAudio()); }, "Volume and latency."));
+    pg.items.push_back(MenuItem::submenu("Audio", [this]() { menu.push(pageAudio()); },
+                                         "Volume, latency and custom soundtracks (MSU-1 music packs)."));
     pg.items.push_back(MenuItem::submenu("Controls", [this]() { menu.push(pageControls()); },
                                          "Keyboard and joypad bindings for both players."));
+    pg.items.push_back(MenuItem::choice(
+        "Menu Style", {"Storybook", "Retro", "Themed Dark", "Classic"}, [this]() { return cfg.menuStyle; },
+        [this](int v) {
+          cfg.menuStyle = v;
+          applyConfig();
+        },
+        "How these menus look: Storybook (bright and chunky), Retro (black, bricks and a pixel font), Themed Dark "
+        "(dark, under the game's own heading) or Classic (the original dark panel)."));
     pg.items.push_back(MenuItem::header("Launcher"));
     pg.items.push_back(MenuItem::choice(
         "Launcher Shows", {"Super Mario All-Stars", "The Four Games"}, [this]() { return cfg.launcherAllStars ? 0 : 1; },
@@ -793,6 +938,86 @@ std::shared_ptr<MenuPage> App::pageOptions() {
         },
         "Super Mario All-Stars: one card, the cartridge's own title and game select. The Four Games: a card "
         "for each, straight to its save files."));
+    // The player's own covers and background (none come with the game).
+#ifdef __ANDROID__
+    const std::string where = "Choose each picture below (PNG or JPG).";
+#else
+    const std::string where = "Put PNG or JPG pictures in the covers folder (Open Covers Folder below): smb1, "
+                              "lostlevels, smb2, smb3 and allstars (the single card), and background.";
+#endif
+    pg.items.push_back(MenuItem::toggle(
+        "Game Covers", [this]() { return cfg.launcherCovers ? 1 : 0; },
+        [this](int v) {
+          cfg.launcherCovers = v != 0;
+          applyLauncherArt();
+        },
+        "The cards show your own cover pictures in place of their live previews; a card without one keeps its "
+        "preview. " + where));
+    pg.items.push_back(MenuItem::choice(
+        "Cover Shape", {"Fill the Frame", "Whole Cover"}, [this]() { return cfg.launcherCoverFill ? 0 : 1; },
+        [this](int v) {
+          cfg.launcherCoverFill = v == 0;
+          applyLauncherArt();
+        },
+        "Fill the Frame: the cover fills its card's square frame, its edges trimmed (a tall box's mostly from the "
+        "bottom). Whole Cover: all of it, with dark bars beside a tall one."));
+    pg.items.push_back(MenuItem::toggle(
+        "Custom Background", [this]() { return cfg.launcherBackground ? 1 : 0; },
+        [this](int v) {
+          cfg.launcherBackground = v != 0;
+          applyLauncherArt();
+        },
+        "The launcher's background is your own picture, filling the screen. " + where));
+#ifdef __ANDROID__
+    static const char* const kArtLabels[] = {"Super Mario Bros.", "The Lost Levels", "Super Mario Bros. 2",
+                                             "Super Mario Bros. 3", "Super Mario All-Stars"};
+    for (int k = 0; k <= Launcher::kCards; k++)
+      pg.items.push_back(MenuItem::action(std::string("Choose Cover: ") + kArtLabels[k], [this, k]() { pickArt(k); },
+                                          "A picture from your phone for this card (turn Game Covers on to see it)."));
+    pg.items.push_back(MenuItem::action("Choose Background", [this]() { pickArt(-1); },
+                                        "A picture from your phone for the launcher (turn Custom Background on)."));
+#else
+    pg.items.push_back(MenuItem::action("Open Covers Folder", [this]() {
+      const std::wstring dir = pathJoin(exeDir, L"covers");
+      makeDir(dir);
+      openFolder(dir);
+      menu.notify("Covers folder opened - pictures are read when you switch Game Covers on", 4.0f);
+    }, "Where your covers and background go. After adding pictures, switch Game Covers (or Custom Background) "
+       "off and on again to read them."));
+#endif
+    pg.items.push_back(MenuItem::header("Updates"));
+    pg.items.push_back(MenuItem::toggle(
+        "Check for Updates", [this]() { return cfg.checkUpdates ? 1 : 0; },
+        [this](int v) {
+          cfg.checkUpdates = v != 0;
+          applyUpdateTag(cfg.updateLatest);
+          if (cfg.checkUpdates) checkForUpdate(false);
+        },
+        std::string("Once a day the launcher looks up the latest release on GitHub (nothing about you or your game is "
+                    "sent) and shows a badge when there's a newer version than this one (") +
+            kAppVersion + ")."));
+    if (!updateTag.empty()) {
+      pg.items.push_back(MenuItem::action("Get Version " + updateVersion(), [this]() {
+        openUrl(UpdateCheck::pageFor(updateTag).c_str());
+        menu.notify("Opened the version " + updateVersion() + " download page in your browser");
+      }, "Opens its page on GitHub, where it can be downloaded. Your saves and settings carry over."));
+    } else {
+      pg.items.push_back(MenuItem::action(updater.running() ? "Checking..." : "Check Now", [this]() {
+        if (updater.running()) return;
+        checkForUpdate(true);
+        menu.notify("Checking for updates...", 2.0f);
+        menu.refresh();
+      }, std::string("Looks up the latest release on GitHub now. This is version ") + kAppVersion + "."));
+    }
+    pg.items.push_back(MenuItem::header("Gameplay"));
+    pg.items.push_back(MenuItem::toggle(
+        "NES Brick Bounce", [this]() { return cfg.nesBrickBounce ? 1 : 0; },
+        [this](int v) {
+          cfg.nesBrickBounce = v != 0;
+          applyConfig();
+        },
+        "Super Mario Bros. and The Lost Levels: breaking a brick from below sends Mario back down, as on the NES. "
+        "Off: he keeps rising, as in the original All-Stars. (BMF54123's brick fix.)"));
     pg.items.push_back(MenuItem::header("Multiplayer"));
     pg.items.push_back(MenuItem::toggle(
         "Two-Player Co-op", [this]() { return cfg.coop ? 1 : 0; },
@@ -948,6 +1173,23 @@ std::shared_ptr<MenuPage> App::pageAchievements() {
   p->rebuild = [this](MenuPage& pg) {
     pg.items.clear();
     pg.items.push_back(achievementsSwitch());
+    pg.items.push_back(MenuItem::action("Export to CSV", [this]() {
+      // (Windows / Linux: next to the settings; Android: where screenshots go, reachable over USB)
+      const std::wstring dir = pathJoin(pathDir(shotDir), L"achievements export");
+      std::string err;
+      if (!exportAchievements(dir, achStore, &err)) {
+        menu.notify("Export failed: " + err, 5.0f);
+        return;
+      }
+      logf("achievements exported to %s", narrow(dir).c_str());
+#ifdef __ANDROID__
+      menu.notify("Exported to Android/data/com.darhkfox.allstars/files/achievements export", 6.0f);
+#else
+      openFolder(dir);
+      menu.notify("Achievements exported: achievements.csv and icons", 4.0f);
+#endif
+    }, "Writes achievements.csv (ID, title, description, points, trophy, hidden, progress, unlocked and when, "
+       "icons) and an icons folder, earned and locked, for tools such as PlayniteAchievements' spreadsheet import."));
     // the running game's first
     GameId order[4] = {GameId::SMB1, GameId::SMBLL, GameId::SMB2, GameId::SMB3};
     GameId cur = inLauncher || !game ? Launcher::cardGame(launcher.card()) : game->current();
@@ -1094,7 +1336,11 @@ std::shared_ptr<MenuPage> App::pageDisplay() {
           applyDisplayMode();
           menu.refresh();
         },
+#ifdef __APPLE__
+        "Ctrl+Cmd+F or Option+Return toggles windowed mode."));
+#else
         "F11 toggles windowed mode."));
+#endif
 #endif
     pg.items.push_back(MenuItem::choice(
         "Aspect Ratio", {"4:3 (Original)", "16:10 Widescreen", "16:9 Widescreen", "21:9 Ultrawide", "Auto (Fill Display)"},
@@ -1182,10 +1428,16 @@ std::shared_ptr<MenuPage> App::pageGraphics() {
                    "LCD Grid"},
         [this]() { return cfg.filter; }, [this](int v) { cfg.filter = v; },
         "Sharp Bilinear keeps pixels crisp without uneven sizes."));
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__APPLE__)
     MenuItem sl = MenuItem::submenu("Slang Shader", [this]() { menu.push(pageSlang()); },
+#ifdef __APPLE__
+                                    "RetroArch slang shader presets (.slangp): the ones that come with the game and "
+                                    "any in the 'shaders' folder of its data folder, in place of the filter above "
+                                    "(and the colour settings).");
+#else
                                     "RetroArch slang shader presets (.slangp) from the 'shaders' folder next to the "
                                     "game, in place of the filter above (and the colour settings).");
+#endif
     sl.valueText = [this]() {
       if (cfg.slangPreset.empty()) return std::string("Off");
       std::wstring n = std::filesystem::path(cfg.slangPreset).stem().wstring();
@@ -1273,6 +1525,19 @@ std::shared_ptr<MenuPage> App::pageAudio() {
                                           applyConfig();
                                         },
                                         "%"));
+    pg.items.push_back(MenuItem::slider("Music Volume", 0, 100, 5, [this]() { return cfg.musicVolume; },
+                                        [this](int v) {
+                                          cfg.musicVolume = v;
+                                          applyConfig();
+                                        },
+                                        "%", "The games' music (and a music pack's). 0% turns the music off and keeps "
+                                             "the sound effects."));
+    pg.items.push_back(MenuItem::slider("Sound Effects Volume", 0, 100, 5, [this]() { return cfg.sfxVolume; },
+                                        [this](int v) {
+                                          cfg.sfxVolume = v;
+                                          applyConfig();
+                                        },
+                                        "%", "Jumps, coins, stomps and the rest. 0% turns them off and keeps the music."));
     pg.items.push_back(MenuItem::slider("Latency", 20, 160, 10, [this]() { return cfg.audioLatency; },
                                         [this](int v) {
                                           cfg.audioLatency = v;
@@ -1282,6 +1547,58 @@ std::shared_ptr<MenuPage> App::pageAudio() {
                                         " ms", "Lower values respond faster; raise it if you hear crackling."));
     pg.items.push_back(MenuItem::toggle("Mute When Unfocused", [this]() { return cfg.muteUnfocused ? 1 : 0; },
                                         [this](int v) { cfg.muteUnfocused = v; }));
+    // MSU-1 music packs (app/msupack.h): Off, then the msu folder's packs
+    pg.items.push_back(MenuItem::header("Custom Soundtrack (MSU-1)"));
+    if (msuDir.empty()) msuDir = pathJoin(exeDir, L"msu");
+    auto packs = std::make_shared<std::vector<std::wstring>>(listMsuPacks(msuDir));
+    if (!cfg.msuPack.empty() && std::find(packs->begin(), packs->end(), cfg.msuPack) == packs->end())
+      packs->push_back(cfg.msuPack);  // (chosen, since gone: shown so it can be turned off)
+    std::vector<std::string> names = {"Off"};
+    for (const auto& n : *packs) names.push_back(narrow(n));
+    std::string help;
+    if (!cfg.msuPack.empty() && cfg.msuPack == msuLoaded && !msuStatus.empty()) help = msuStatus + " ";
+    else if (cfg.msuPack != msuLoaded)
+      help = inLauncher ? "Starts when you next start a game. "
+                        : "Choose Restart With This Pack below to hear it now (or it starts with your next game). ";
+    help += packs->empty() ? "Put a pack in its own folder in the msu folder: its MSU-1 patch (.bps or .ips) and "
+                             "its tracks (.pcm), then come back here."
+                           : "A pack is a folder in the msu folder: its MSU-1 patch (.bps or .ips) and tracks (.pcm).";
+    pg.items.push_back(MenuItem::choice(
+        "Music Pack", names,
+        [this, packs]() {
+          for (size_t i = 0; i < packs->size(); i++)
+            if ((*packs)[i] == cfg.msuPack) return (int)i + 1;
+          return 0;
+        },
+        [this, packs](int v) {
+          cfg.msuPack = v <= 0 ? std::wstring() : (*packs)[(size_t)std::min<int>(v, (int)packs->size()) - 1];
+          if (inLauncher) {
+            reloadForMsu();
+            if (!cfg.msuPack.empty() && !(snes && snes->msu)) menu.notify(msuStatus, 5.0f);
+          }
+          if (!test.on && test.runSeconds <= 0) cfg.save(configPath);
+          menu.refresh();  // (its help says what became of it)
+        },
+        help));
+    if (!inLauncher && snes && cfg.msuPack != msuLoaded) {
+      // (in a game: the console is rebuilt with the pack, so the game starts again)
+      pg.items.push_back(MenuItem::action("Restart With This Pack", [this]() {
+        menu.confirm("Restart the game with this music?", [this]() { launchGame(playing); },
+                     "The game starts again from its title. Progress since your last save is lost.");
+      }, "Starts the game again from its title with the chosen music pack (or none)."));
+    }
+    pg.items.push_back(MenuItem::slider("Music Pack Volume", 0, 100, 5, [this]() { return cfg.msuVolume; },
+                                        [this](int v) {
+                                          cfg.msuVolume = v;
+                                          applyConfig();
+                                        },
+                                        "%"));
+#ifndef __ANDROID__
+    pg.items.push_back(MenuItem::action("Open MSU-1 Folder", [this]() {
+      makeDir(msuDir);
+      openFolder(msuDir);
+    }, "Where music packs go: one folder per pack."));
+#endif
   };
   return p;
 }
@@ -1312,6 +1629,15 @@ std::shared_ptr<MenuPage> App::pageControls() {
                                         [this](int v) { cfg.selectMode = v; },
                                         "Opens Menu: Select brings up this menu; the game's own Select is on the "
                                         "left stick button or Menu > Press Select In Game."));
+    pg.items.push_back(MenuItem::choice(
+        "Menu Buttons", {"Bottom Confirms", "Right Confirms"}, [this]() { return cfg.confirmRight ? 1 : 0; },
+        [this](int v) {
+          cfg.confirmRight = v != 0;
+          applyConfig();
+        },
+        "Which face button chooses in the menus and the launcher: the bottom one (A on an Xbox pad), or the right "
+        "one (A on a Nintendo pad); the other goes back. The games' own buttons are set by their TYPE A / TYPE B "
+        "and Button Bindings."));
     pg.items.push_back(MenuItem::slider("Stick Deadzone", 10, 80, 5, [this]() { return cfg.deadzone; },
                                         [this](int v) { cfg.deadzone = v; }, "%"));
 #ifndef _WIN32
@@ -1488,6 +1814,7 @@ void App::frame(double dt, int gameFrames) {
   dt = std::min(dt, 0.1);
   menu.tickToasts((float)dt);
   updateInput(dt);
+  updateTick();
   if (bindAction >= 0) updateBind(dt);
   if (inLauncher) {
     frameLauncher(dt, gameFrames);
@@ -1530,6 +1857,11 @@ void App::frame(double dt, int gameFrames) {
         at.padPos++;
       }
 #endif
+      // (Of the frames a pass runs, only the last is drawn: a device that
+      // falls behind (a Galaxy A12: 30 fps, the sound stuttering) runs two a
+      // pass, and drawing is most of a frame's work. The game keeps its speed
+      // and its sound; the picture changes less often. Fast forward too.)
+      snes->ppu.skipRender = !loading && i < runs - 1;
       game->beforeFrame();
       snes->runFrame();
       game->afterFrame();
@@ -1547,6 +1879,7 @@ void App::frame(double dt, int gameFrames) {
       if (cfg.rewind && !achLocked() && !loading && !game->coopMidTurn() && (++rewindCount & 1) == 0)
         rewind.push(snes->saveState());
     }
+    snes->ppu.skipRender = false;
     achFrame();
   }
   sramTimer += dt;
@@ -1569,6 +1902,10 @@ void App::render() {
     video.clear();
     video.beginUi();
     menu.setAccent(launcher.accent());
+    {
+      const GameId g = Launcher::cardGame(launcher.card());
+      menu.setGameArt(g == GameId::SMB1 ? 1 : g == GameId::SMBLL ? 2 : g == GameId::SMB2 ? 3 : g == GameId::SMB3 ? 4 : 0);
+    }
     launcher.setPixelAspect(cfg.pixelAspectCrt ? 8.0 / 7.0 : 1.0);
     launcher.draw(menu, video.width(), video.height());
     if (menu.open()) menu.draw(video.width(), video.height(), menuAnim);
@@ -1626,7 +1963,14 @@ void App::render() {
   if (loading) vp.fade = 0;
   video.draw(vp);
   video.beginUi();
-  // The menu's accent: the running game's colour.
+  // The menu's accent: the running game's colour (and its heading's art).
+  switch (game->current()) {
+    case GameId::SMB1: menu.setGameArt(1); break;
+    case GameId::SMBLL: menu.setGameArt(2); break;
+    case GameId::SMB2: menu.setGameArt(3); break;
+    case GameId::SMB3: menu.setGameArt(4); break;
+    default: menu.setGameArt(0); break;
+  }
   switch (game->current()) {
     case GameId::SMB1: menu.setAccent(colorF(0.93f, 0.33f, 0.27f)); break;    // Mario red
     case GameId::SMBLL: menu.setAccent(colorF(0.36f, 0.76f, 0.40f)); break;   // Luigi green

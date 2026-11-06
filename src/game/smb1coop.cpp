@@ -599,6 +599,17 @@ void Smb1Engine::swapRoles() {
   luigiLive_ = !luigiLive_;
   liveCtrl_ = !liveCtrl_;
   lastP2Inj_ = p2_[varIndex(0x07AE)];  // (the other's, not a hit)
+  // (Each enemy's "touching the player" bit is the game's player's, the
+  // other's kept aside (see coopEnemyAt_): swapped with the roles. Kept, the
+  // one taking over had the other's touch: small Mario killed by a Koopa,
+  // Luigi walked through it as if already touching it, ten frames.)
+  if (collBits_)
+    for (int k = 0; k < 10; k++) {
+      uint8_t& b = w[collBits_ + k];
+      const uint8_t mine = b & 1;
+      b = (uint8_t)((b & ~1) | (p2Coll_[k] & 1));
+      p2Coll_[k] = mine;
+    }
   // (The game's own box for its player ($0F9C) is still the other's till his
   // update works it out again: until then nothing meets him (see collide_).
   // Mario fallen into a castle's lava: a Podoboo by Mario's box in the lava

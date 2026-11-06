@@ -219,15 +219,36 @@ bool MusicPlayer::startDriver(int bank) {
 void MusicPlayer::runApu(double seconds, bool output) {
   spcTime_ += seconds * kSpcHz;
   apu_->runTo((uint64_t)spcTime_);
+  if (msuOn_ && msu_ && !apu_->samples.empty()) {
+    msu_->mix(apu_->samples.data(), apu_->samples.size() / 2, 32040.0);
+    // (the bars: the pack's sound has no voices, so eight slices of its level)
+    const size_t frames = apu_->samples.size() / 2;
+    for (int v = 0; v < 8; v++) {
+      int peak = 0;
+      for (size_t i = frames * v / 8; i < frames * (v + 1) / 8; i++)
+        peak = std::max(peak, std::abs((int)apu_->samples[i * 2 + (v & 1)]));
+      voiceLevel_[v] = std::max(std::min(1.0f, peak / 12000.0f), voiceLevel_[v] * 0.86f);
+    }
+  }
   if (output && audio_ && !apu_->samples.empty()) {
     audio_->push(apu_->samples.data(), apu_->samples.size() / 2, 32040.0);
   }
   // meter levels for the visualizer
-  for (int v = 0; v < 8; v++) {
+  for (int v = 0; v < 8 && !msuOn_; v++) {
     float lvl = std::min(1.0f, std::abs(apu_->dsp.voices[v].lastOut) / 12000.0f + apu_->dsp.voices[v].env / 4096.0f);
     voiceLevel_[v] = std::max(lvl, voiceLevel_[v] * 0.86f);
   }
   apu_->samples.clear();
+}
+
+void MusicPlayer::setMsu(const std::wstring& base, const std::string& name, float gain) {
+  stop();
+  msu_.reset();
+  msuName_ = name;
+  if (base.empty()) return;
+  msu_ = std::make_unique<Msu1>();
+  msu_->open(base);
+  msu_->setGain(gain);
 }
 
 void MusicPlayer::playId(int bank, uint8_t id, int trackIndex) {
@@ -237,10 +258,29 @@ void MusicPlayer::playId(int bank, uint8_t id, int trackIndex) {
   curBank_ = bank;
   curTrack_ = trackIndex;
   curId_ = id;
+  // The pack's track for the song, if it has one: a song's number plus its
+  // game's place in the packs' numbering (as the MSU-1 patches count them:
+  // Super Mario Bros. / The Lost Levels from 1, Super Mario Bros. 2 from 33,
+  // Super Mario Bros. 3's map from 65 and levels from 97, the menu from 129).
+  msuOn_ = false;
+  if (msu_ && usePack_ && id) {
+    static const int kFirst[kBankCount] = {0x80, 0x00, 0x20, 0x60, 0x40};  // (kBankMenu .. kBankSmb3Map)
+    const int t = id + kFirst[std::clamp(bank, 0, kBankCount - 1)];
+    msu_->write(0x2006, 0xff);
+    msu_->write(0x2004, (uint8_t)t);
+    msu_->write(0x2005, (uint8_t)(t >> 8));
+    if (!(msu_->read(0x2000) & 0x08)) {
+      const auto& list = tracks(bank);
+      const bool loops = trackIndex < 0 || trackIndex >= (int)list.size() || list[trackIndex].loops;
+      msu_->write(0x2007, loops ? 3 : 1);
+      msuOn_ = true;
+    }
+  }
   // Starting the same ID again needs an edge: clear the port for a moment.
+  // (The pack's song: the console's music stopped, its sound effects kept.)
   apu_->inPorts[2] = 0;
   runApu(0.02, false);
-  apu_->inPorts[2] = id;
+  apu_->inPorts[2] = msuOn_ ? 0xf0 : id;
   playing_ = true;
   playTime_ = 0;
   if (audio_) audio_->flush();
@@ -281,6 +321,8 @@ bool MusicPlayer::testRender(int bank, uint8_t id, double seconds, int* peak, do
 
 void MusicPlayer::stop() {
   if (apu_ && driverRunning_) apu_->inPorts[2] = 0xf0;
+  if (msu_) msu_->write(0x2007, 0);
+  msuOn_ = false;
   playing_ = false;
   curTrack_ = -1;
   pulses_.clear();
@@ -314,7 +356,7 @@ void MusicPlayer::update(double dt, bool menuOpen) {
   playTime_ += dt;
   // End-of-track handling: the driver's music echo returns to 0 when a
   // non-looping song finishes.
-  bool ended = playTime_ > 0.5 && apu_->outPorts[2] == 0 && curId_ != 0;
+  bool ended = playTime_ > 0.5 && (msuOn_ ? !msu_->playing() : apu_->outPorts[2] == 0 && curId_ != 0);
   const auto& list = tracks(curBank_);
   bool looping = curTrack_ >= 0 && curTrack_ < (int)list.size() && list[curTrack_].loops;
   if (afterTrack_ == 2 && curTrack_ >= 0 && (ended || (looping && playTime_ > 120.0))) {
@@ -342,7 +384,8 @@ void MusicPlayer::drawVisualizer(Menu& menu, Canvas* cv, RectF r, bool large) {
   menu.text(Menu::widen(title), rectF(r.left + pad, y, r.right - pad, y + 40 * s), 28 * s, true,
             colorF(1, 1, 1));
   y += 40 * s;
-  menu.text(Menu::widen(bankName(curBank_)), rectF(r.left + pad, y, r.right - pad, y + 28 * s), 18 * s, false,
+  const std::string from = playing_ && msuOn_ ? "  \xE2\x80\xA2  " + msuName_ : std::string();
+  menu.text(Menu::widen(bankName(curBank_) + from), rectF(r.left + pad, y, r.right - pad, y + 28 * s), 18 * s, false,
             colorF(0.7f, 0.74f, 0.85f));
   y += 30 * s;
   char tbuf[32];
@@ -399,6 +442,16 @@ std::shared_ptr<MenuPage> MusicPlayer::playerPage(Menu& menu) {
                                         [this]() { return afterTrack_; }, [this](int v) { afterTrack_ = v; },
                                         "Play Next moves on when a song ends (looping songs after 2 minutes)."));
     pg.items.push_back(MenuItem::action("Stop", [this]() { stop(); }));
+    if (msu_) {
+      pg.items.push_back(MenuItem::choice(
+          "Music", {"Original", msuName_}, [this]() { return usePack_ ? 1 : 0; },
+          [this](int v) {
+            usePack_ = v != 0;
+            if (playing_ && curId_) playId(curBank_, curId_, curTrack_);  // (the same song, the other way)
+          },
+          "The music pack's songs (chosen in Options > Audio), or the originals. Songs the pack doesn't have play "
+          "the original."));
+    }
     pg.items.push_back(MenuItem::separator("Tracks"));
     const auto& list = tracks(curBank_);
     for (int i = 0; i < (int)list.size(); i++) {

@@ -1,0 +1,85 @@
+# macOS build: compiles the port on a GitHub macOS runner (SDL2 built from
+# source into the app, librashader beside it; Metal video), universal (Apple silicon and Intel) for
+# macOS 11 and later, signed ad hoc (no Apple developer account: players open
+# it once through Privacy & Security, see packaging/macos/beta-notes.md) and
+# zipped, uploaded as the run's artifact. No game data is involved.
+name: macOS app
+
+on:
+  push:
+    branches: [main, linux]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write  # (the beta pre-release)
+
+jobs:
+  app:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SDL2 2.32.10
+        run: packaging/macos/fetch_sdl.sh
+
+      # librashader (the slang presets' runtime) from source, universal; kept
+      # between runs, rebuilt when its script changes
+      - uses: actions/cache@v4
+        id: librashader
+        with:
+          path: third_party/librashader/librashader.dylib
+          key: librashader-macos-${{ hashFiles('packaging/macos/build_librashader.sh') }}
+
+      - name: librashader 0.12.0
+        if: steps.librashader.outputs.cache-hit != 'true'
+        run: packaging/macos/build_librashader.sh
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target SuperMarioAllStars -j 4
+
+      - name: Package
+        run: |
+          set -x
+          app=build/SuperMarioAllStars.app
+          lipo -info "$app/Contents/MacOS/SuperMarioAllStars" "$app/Contents/Frameworks/librashader.dylib"
+          # (only the system's libraries: SDL is linked in)
+          if otool -L "$app/Contents/MacOS/SuperMarioAllStars" | grep $'^\t' | grep -v -e /System/ -e /usr/lib/; then
+            echo "::error::the app links a library outside macOS"; exit 1
+          fi
+          mkdir dist
+          ditto "$app" "dist/Super Mario All-Stars.app"
+          codesign --force --deep --sign - "dist/Super Mario All-Stars.app"
+          codesign --verify --deep --strict "dist/Super Mario All-Stars.app"
+          cp release/README.txt dist/
+          (cd dist && ditto -c -k --keepParent "Super Mario All-Stars.app" ../SuperMarioAllStars-macOS.zip)
+          zip -j SuperMarioAllStars-macOS.zip dist/README.txt
+          ls -la SuperMarioAllStars-macOS.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SuperMarioAllStars-macOS
+          path: SuperMarioAllStars-macOS.zip
+
+      # The beta pre-release (tag macos-beta), replaced by each build of the
+      # branch: a plain download link for testers. Not marked Latest.
+      - name: Beta pre-release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -x
+          if gh release view macos-beta --json tagName > /dev/null; then
+            gh release edit macos-beta --prerelease --latest=false \
+              --title "Super Mario All-Stars macOS Beta" --notes-file packaging/macos/beta-notes.md
+            gh release upload macos-beta SuperMarioAllStars-macOS.zip --clobber
+          else
+            gh release create macos-beta SuperMarioAllStars-macOS.zip \
+              --prerelease --latest=false --target "$GITHUB_SHA" \
+              --title "Super Mario All-Stars macOS Beta" \
+              --notes-file packaging/macos/beta-notes.md
+          fi
+          gh release view macos-beta --json assets --jq '.assets[] | .name + " " + .updatedAt'

@@ -21,8 +21,15 @@ bool fileModified(const std::wstring& path, int* day, int* month, int* hour, int
 void makeDir(const std::wstring& path);
 // The names of the files in a folder (not folders); false if it can't be read.
 bool listFiles(const std::wstring& dir, std::vector<std::wstring>& names);
+// ... and of the folders in it.
+bool listDirs(const std::wstring& dir, std::vector<std::wstring>& names);
 
 // Local time now, strftime-formatted.
 std::string timeText(const char* fmt);
 
 void openUrl(const char* url);
+// A web page (https GET), its body in `out`; false if it couldn't be had (offline, not 200).
+// Blocks for up to about 10 s: call it from a background thread. (sys_win.cpp: WinHTTP;
+// app_linux.cpp: the system's curl; app_android.cpp: Java's HttpURLConnection.)
+bool httpGet(const char* url, std::string& out);
+void openFolder(const std::wstring& path);  // in the system's file manager (Android: nothing)

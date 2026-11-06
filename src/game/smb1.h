@@ -213,6 +213,7 @@ private:
   int curRel_ = 0;
   int relBy_[7] = {};  // each Rel_XPos ($03AD-$03B3) as last worked out, valid this frame (see onWrite)
   uint32_t relByFrame_[7] = {};
+  uint8_t relV_[7] = {};  // (the value the game wrote for each, then)
   int curWrites_ = 0;  // OAM X writes remaining for the current object
   // BG1 column tracking: world tile column held by each VRAM map column
   int colWorld_[64];
@@ -392,6 +393,7 @@ private:
   // (Pages from $80 up are left of page 0: LL 8-4's maze loop puts the
   // camera on page $FF.)
   int camera() const { return (int8_t)ram(0x071a) * 256 + ram(0x071c); }
+  bool leavesBuilt(int x);
   int parserPos() const { return (int8_t)ram(0x0725) * 256 + ram(0x0726) * 16; }
   void trackParser();
 };

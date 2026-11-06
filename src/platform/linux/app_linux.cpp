@@ -111,6 +111,21 @@ bool takeRom(const std::wstring& data, const std::string& path) {
 
 void openUrl(const char* url) { SDL_OpenURL(url); }
 
+bool httpGet(const char* url, std::string& out) {
+  out.clear();
+  // (the AppImage's own libraries kept out of the system curl's way)
+  const std::string cmd = std::string("env -u LD_LIBRARY_PATH curl -fsSL --max-time 10 ") +
+                          "-H 'Accept: application/vnd.github+json' -A SuperMarioAllStars-port '" + url +
+                          "' 2>/dev/null";
+  FILE* p = popen(cmd.c_str(), "r");
+  if (!p) return false;
+  char buf[4096];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof buf, p)) > 0 && out.size() < (1u << 20)) out.append(buf, n);
+  return pclose(p) == 0 && !out.empty();
+}
+void openFolder(const std::wstring& path) { SDL_OpenURL(("file://" + narrowUtf8(path)).c_str()); }
+
 void App::applyDisplayMode() {
   if (!window) return;
   const bool full = cfg.displayMode != DisplayMode::Windowed;
@@ -181,6 +196,11 @@ void App::pollPick() {
   romPoll = 0;
   pollRom(0);
 }
+
+// (The covers and background go in the covers folder: Options > Launcher >
+// Open Covers Folder; no picker here.)
+void App::pickArt(int) {}
+void App::pollArtPick() {}
 
 // Taps and drags (the Steam Deck's screen; a mouse acts as one finger): on the
 // launcher's cards and buttons, the menus' rows; the on-screen pad's Menu button.

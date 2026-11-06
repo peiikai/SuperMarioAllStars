@@ -259,6 +259,11 @@ void Dsp::runSample(int16_t* outL, int16_t* outR) {
     // output mixing
     int l = (tOut * (int8_t)vr[vVolL]) >> 7;
     int r = (tOut * (int8_t)vr[vVolR]) >> 7;
+    if (musicGain != 256 || sfxGain != 256) {  // (the player's music / sound effects volumes)
+      const int g = (sfxVoices & vbit) ? sfxGain : musicGain;
+      l = (l * g) >> 8;
+      r = (r * g) >> 8;
+    }
     mainL = clamp16(mainL + l);
     mainR = clamp16(mainR + r);
     if (regs[rEon] & vbit) {

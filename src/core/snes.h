@@ -6,6 +6,8 @@
 #include "cpu65816.h"
 #include "ppu.h"
 #include "apu.h"
+#include "msu1.h"
+#include <memory>
 
 // Joypad bit layout (matches the 16-bit auto-read format)
 enum : uint16_t {
@@ -52,6 +54,8 @@ public:
   bool sramDirty = false;
   // Extra ROM space mapped at banks $60-$6F:$8000-$FFFF for patch code.
   std::vector<uint8_t> patchRom;
+  // MSU-1 (an MSU-1 patch's music pack, see core/msu1.h): absent unless one is chosen.
+  std::unique_ptr<Msu1> msu;
 
   uint16_t input[2] = {0, 0};
 

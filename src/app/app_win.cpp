@@ -386,9 +386,37 @@ void App::run() {
       // time with the remainder carried on, a remainder sitting at half a
       // refresh turned the passes' small jitter into 0, 2, 0, 2 ...: the
       // in-between pictures' moments jumped a refresh back and forth.)
+      // The waits not a whole number of refreshes apart: they aren't the
+      // display's refreshes (a variable-refresh display, G-SYNC / FreeSync,
+      // waits for the next picture; a refresh rate reported wrong): the game
+      // runs on the clock then, the remainder carried on, none of the time
+      // lost. (Counted in rounded refreshes, it ran at a third to two thirds
+      // of its speed for players with G-SYNC and VSync on.)
+      const int whole = std::max(1, (int)std::lround(dt / rp));
+      const bool offBeat = vblankWaited && std::fabs(dt - whole * rp) > 0.3 * rp;
+      if (offBeat && !pacing.offBeatLogged && ++pacing.offBeatCount > 120) {
+        pacing.offBeatLogged = true;
+        logf("pacing: the vertical-blank waits don't follow the %.1f Hz refresh (variable refresh?): game time from "
+             "the clock", hz);
+      }
+      if (!offBeat) pacing.offBeatCount = 0;
+      // (and over each 60 passes: the refreshes counted against the time gone
+      // by; more than 2% apart (waits a little off each time, a refresh rate
+      // reported wrong), the clock for the next 60)
+      pacing.sumReal += dt;
+      pacing.sumCounted += whole * rp;
+      if (++pacing.nWin >= 60) {
+        const bool drift = std::fabs(pacing.sumCounted - pacing.sumReal) > 0.02 * pacing.sumReal;
+        if (drift && !pacing.clockMode)
+          logf("pacing: %.0f refreshes counted in %.2f s at %.1f Hz: game time from the clock",
+               pacing.sumCounted / rp, pacing.sumReal, hz);
+        pacing.clockMode = drift;
+        pacing.sumReal = pacing.sumCounted = 0;
+        pacing.nWin = 0;
+      }
       int vb;
-      if (vblankWaited) {
-        vb = std::max(1, (int)std::lround(dt / rp));
+      if (vblankWaited && !offBeat && !pacing.clockMode) {
+        vb = whole;
         pacing.vbResidual = 0;
       } else {
         pacing.vbResidual += dt;
@@ -396,7 +424,7 @@ void App::run() {
         pacing.vbResidual -= vb * rp;
       }
       if (cfg.pacingLog) pacing.vbSeen[std::min(std::max(vb, 0), 3)]++;
-      if (vb > 6) {  // stalled (window drag, system hiccup): resume without fast-forwarding
+      if (dt > 0.25) {  // stalled (window drag, system hiccup): resume without fast-forwarding
         vb = 0;
         pacing.vbResidual = 0;
         pacing.vblanks = 0;
@@ -417,7 +445,7 @@ void App::run() {
           frames++;
         }
       }
-      frames = std::min(frames, 3);
+      frames = std::min(frames, 5);  // (catching up: slow waits need several frames a pass)
     } else if (const int subs = hfrSubFrames(); subs > 1) {
       // High frame rate without VSync (G-SYNC / FreeSync): a pass per
       // in-between picture, the game frame on every subs-th (see hfrT).

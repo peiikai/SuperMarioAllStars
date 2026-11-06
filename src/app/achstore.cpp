@@ -44,14 +44,16 @@ bool AchievementStore::save() const {
   return writeFileSafely(path_, t.data(), t.size());
 }
 
-std::string AchievementStore::unlockedOn(const std::string& id) const {
+std::string AchievementStore::unlockedOn(const std::string& id) const { return unlockedAt(id).substr(0, 10); }
+
+std::string AchievementStore::unlockedAt(const std::string& id) const {
   auto it = unlocked_.find(id);
   return it == unlocked_.end() ? std::string() : it->second;
 }
 
 bool AchievementStore::unlock(const std::string& id) {
   if (unlocked_.count(id)) return false;
-  unlocked_[id] = timeText("%Y-%m-%d");
+  unlocked_[id] = timeText("%Y-%m-%d %H:%M:%S");
   return true;
 }
 

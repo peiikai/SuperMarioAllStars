@@ -326,6 +326,23 @@ static void execLine(const std::string& line) {
       printf("subdiff f%d %d\n", (int)s.frameCount(), d);
     }
     last.assign(pp.frame, pp.frame + n);
+  } else if (cmd == "msu") {
+    // msu BASE: an MSU-1 music pack attached (BASE: its files' path without "-N.pcm" / ".msu"); "msu" alone: none
+    std::string b;
+    ss >> b;
+    if (b.empty()) {
+      s.msu.reset();
+    } else {
+      s.msu = std::make_unique<Msu1>();
+      s.msu->open(std::wstring(b.begin(), b.end()));
+    }
+  } else if (cmd == "brickbounce") {
+    // brickbounce 0|1: Super Mario Bros. / The Lost Levels' NES brick bounce (SmasGame::setNesBrickBounce)
+    int v = 1;
+    ss >> v;
+    g_game->setNesBrickBounce(v != 0);
+  } else if (cmd == "msustat") {
+    printf("msu %s track=%d playing=%d\n", s.msu ? "on" : "off", s.msu ? s.msu->track() : -1, s.msu && s.msu->playing());
   } else if (cmd == "skiprender") {
     // skiprender 0|1: no pixels drawn (as a launcher preview boots)
     int v = 1;
@@ -512,6 +529,17 @@ static void execLine(const std::string& line) {
     for (int i = 0; i < 128; i++) {
       if (i % 16 == 0) printf("%sDSP %02X:", i ? "\n" : "", i);
       printf(" %02X", s.apu.dsp.regs[i]);
+    }
+    printf("\n");
+  } else if (cmd == "aram") {
+    // aram ADDR LEN: the sound CPU's RAM (hex), 16 bytes a line
+    std::string a;
+    int n = 256;
+    ss >> a >> n;
+    const unsigned at = strtoul(a.c_str(), 0, 16);
+    for (int i = 0; i < n; i++) {
+      if (i % 16 == 0) printf("%sARAM %04X:", i ? "\n" : "", (at + i) & 0xffff);
+      printf(" %02X", s.apu.ram[(at + i) & 0xffff]);
     }
     printf("\n");
   } else if (cmd == "warp") {
@@ -745,6 +773,12 @@ static void execLine(const std::string& line) {
     runFrames(frames);
     s.apu.traceFile = nullptr;
     fclose(f);
+  } else if (cmd == "gains") {
+    // gains MUSIC SFX: the music's and the sound effects' volumes, percent (Dsp::musicGain / sfxGain)
+    int m = 100, x = 100;
+    ss >> m >> x;
+    s.apu.dsp.musicGain = m * 256 / 100;
+    s.apu.dsp.sfxGain = x * 256 / 100;
   } else if (cmd == "rec") {
     g_audio.clear();
     g_recordAudio = true;

@@ -29,6 +29,25 @@ The APK ends up in `android/app/build/outputs/apk/debug/` (64-bit ARM phones and
 later, and the x86_64 emulator). Release builds are signed when `android/keystore.properties` names a
 keystore (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`), as the Disney collection's are.
 
+### macOS
+The macOS app uses the same SDL2 layer as Android for the window, sound and controllers, and Metal for
+the picture (text from Core Text). You need Xcode or its command line tools and CMake 3.20+. With the
+SDL2 source in `third_party/SDL2-2.32.10-src` (`packaging/macos/fetch_sdl.sh` downloads and checks it),
+SDL is built into the app; otherwise an installed SDL2 is used (Homebrew's: add
+`-DCMAKE_OSX_ARCHITECTURES=arm64`). For the slang presets, `packaging/macos/build_librashader.sh`
+builds librashader 0.12.0 from source (needs Rust) into `third_party/librashader/librashader.dylib`,
+which the build puts in the app; without it the built-in filters are used.
+
+```
+packaging/macos/fetch_sdl.sh
+packaging/macos/build_librashader.sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+The app is `build/SuperMarioAllStars.app`: universal (Apple silicon and Intel), macOS 11 or later.
+`.github/workflows/macos.yml` builds it on GitHub's macOS runners, signs it ad hoc and publishes a
+`macos-beta` pre-release, so no Mac is needed to make one.
+
 ## Running
 Put the ROM next to the executable, in a `roms` folder beside it, or in any parent folder up to
 three levels up; the location is remembered in `rompath.txt`. Without it the launcher's cards say
@@ -82,6 +101,16 @@ game select into the game's title, out of sight while it starts. Choosing a card
 and takes it through the All-Stars menu to that game's save files (behind a short black loading
 screen), where you pick the file as usual. The launcher remembers the last game chosen.
 
+*Options → Game Covers* shows the player's own cover pictures on the cards instead of the live
+previews, and *Custom Background* their own picture behind the launcher (filling the window, darkened
+a little so the text reads). None are shipped. PNG or JPG files named `smb1`, `lostlevels`, `smb2`,
+`smb3`, `allstars` (the single card) and `background` go in the `covers` folder (*Open Covers Folder*:
+next to the exe on Windows, in `~/.local/share/SuperMarioAllStars` on Linux); on Android *Choose Cover*
+/ *Choose Background* copy a picture from the phone in. They're read with
+[stb_image](https://github.com/nothings/stb) (`third_party/stb`, public domain / MIT), big ones
+shrunk to 1024 px (2048 for the background). A card without a cover keeps its preview; one with a
+cover runs no preview console at all, which also makes the launcher lighter on slow devices.
+
 ## Controls
 | | Keyboard | Joypad (Xbox layout; PlayStation, Switch Pro and USB/SNES pads supported) |
 |---|---|---|
@@ -107,7 +136,8 @@ controller keeps its pad number while others are plugged in or out, and gets it 
 reconnects, so the players never swap controllers. Select opens
 the menu and backs out of it. The games only need their own Select button for the All-Stars save
 menu (pause, then Select). If you'd rather have it on Select, set *Controls → Select Button* to
-"Tap: Game Select - Hold: Menu".
+"Tap: Game Select - Hold: Menu". In the menus and the launcher the pad's bottom face button confirms
+and the right one goes back; *Controls → Menu Buttons → Right Confirms* swaps them (Nintendo's layout).
 
 ## Menu
 The pause menu is a dark panel over the dimmed game, tinted in the running game's colour (red
@@ -173,6 +203,9 @@ What each page holds:
   exe, MPL-2.0, `third_party/librashader`; without it the game runs on the built-in filters).
   Presets are listed from a `shaders` folder next to the exe, with their shader files beside
   them, e.g. the libretro `slang-shaders` collection; the colour settings don't apply to them.
+  On macOS librashader's Metal runtime is used (`librashader.dylib` in the app's Frameworks,
+  built by `packaging/macos/build_librashader.sh`); the bundled presets are in the app and your
+  own go in a `shaders` folder in the data folder.
   Seven CRT presets are bundled (`third_party/slang-shaders`, copied to `shaders\` by the build):
   crt-lottes (public domain), crt-geom, crt-royale, crt-easymode, crt-aperture, zfast-crt and
   crt-pi (GPL, `LICENSE-GPL-2.0.txt`), unmodified from libretro/slang-shaders with only the files
@@ -183,7 +216,16 @@ What each page holds:
   colour temperature, colour-vision assist (protanopia / deuteranopia / tritanopia), and
   Mario's Colours / Luigi's Colours: alternate outfits for each brother (Super Mario Bros. and The
   Lost Levels), kept by each in co-op whichever is the game's player.
-* **Audio** — volume, latency, mute when unfocused.
+* **Menu Style** — how the menus look: *Storybook* (the default: a cream card with a dark outline, Luckiest Guy
+  titles in the game's colour, a yellow star cursor), *Retro* (black with brick bars, a 5x7 pixel font drawn by the
+  port, ? block switches), *Themed Dark* (the dark panel under a heading in the game's pattern: bricks, the Lost
+  Levels' green bricks, SMB2's starry night, SMB3's checkers) or *Classic* (the original dark panel). `src/app/menu.cpp`.
+* **Audio** — volume, **Music Volume** and **Sound Effects Volume** (each 0–100%: music off with the sound effects kept, or the other way round; the sound driver marks the voices an effect holds at ARAM `$1A`, so the rest are the music and only the mix changes), latency, mute when unfocused, and **Music Pack**: an MSU-1 custom soundtrack (see below).
+* **Updates** — *Check for Updates* (on by default): once a day the launcher reads GitHub's public "latest release" for
+  this repository (`src/app/updatecheck.cpp`; WinHTTP on Windows, the system `curl` on Linux, `HttpURLConnection` on
+  Android, from a background thread) and shows a badge when its tag is newer than the app's version; the badge, or
+  *Get Version*, opens the release page. Nothing is sent but the request; nothing is downloaded or installed.
+* **Gameplay** — **NES Brick Bounce**: in Super Mario Bros. and The Lost Levels, a brick broken from below sends Mario back down as on the NES instead of letting him keep rising (BMF54123's brick fix, updated by Blittle McNilsen, written into the console's ROM while on: `SmasGame::setNesBrickBounce`). Off by default.
 * **Credits** — where to find the author (YouTube, Reddit, GitHub; each opens in your browser).
 * **CO-OP GAME on the title screens** of Super Mario Bros., The Lost Levels and Super Mario Bros. 3:
   a third choice under 1 PLAYER GAME / 2 PLAYER GAME (MARIO GAME / LUIGI GAME; in SMB3 a fourth,
@@ -238,6 +280,21 @@ What each page holds:
   CPU runs at twice its speed (`Snes::setCpuFast`); the PPU, DMA and sound chip keep their timing.
   One-player games keep the console's timing exactly.
 
+## Custom soundtracks (MSU-1)
+
+The port plays MSU-1 music packs, the CD-quality soundtracks made for flash carts and emulators. None are included.
+Put each pack in its own folder in the `msu` folder (Windows: next to the exe; Steam Deck:
+`~/.local/share/SuperMarioAllStars/msu`; Android: `Android/data/com.darhkfox.allstars/files/msu`), with its
+MSU-1 patch (`.bps` or `.ips`, for the USA ROM without a copier header) and its tracks (`NAME-1.pcm`, `NAME-2.pcm`,
+...), then choose it under Options > Audio > Music Pack. A pack without a patch can use one put in the `msu` folder
+itself.
+
+The patch is applied to the console's copy of the ROM as it loads (the file is never changed; the launcher's
+previews run it unpatched), and `src/core/msu1.cpp` emulates the chip: its registers at `$2000-$2007`, the tracks
+streamed from disk and resampled from 44.1 kHz into the console's 32 kHz sound. The track and its place are kept in
+save states. Both the standard patch (each song replaced) and the Super Mario All-Stars Deluxe patch (one of several
+versions of the music picked at each new level) work as they do on hardware.
+
 ## Achievements
 82 achievements: 20 for Super Mario Bros., 19 for The Lost Levels, 20 for SMB2, 21 for SMB3,
 and two for the whole collection. *Menu → Achievements* lists them by game with the date each
@@ -263,6 +320,13 @@ explains this once.
 In SMB1 co-op, Player Two counts when Luigi takes the axe or rides the flagpole down (as the
 game's player, or kept aside and already on the pole as the flag scene starts), and Not a Scratch
 is lost when either player is hurt.
+
+
+**Export to CSV** (top of the Achievements list) writes an `achievements export` folder: `achievements.csv` in
+the columns PlayniteAchievements' spreadsheet import reads (ID, Title, Description, Points, Trophy Type, Hidden,
+Rarity, Category, Progress, Progress Total, Unlocked, Unlock Time, Unlocked Icon, Locked Icon) and `icons/` with
+each achievement's badge, earned and locked, drawn by the port (`src/app/achexport.cpp`: a colour per game, a rim
+per trophy tier, a symbol per achievement). Points follow the tier: bronze 10, silver 25, gold 50, platinum 100.
 
 ## Frame pacing
 The games run at 60.1 frames per second. With VSync on, the frame loop waits on the display's
@@ -493,7 +557,8 @@ games (see `tools/SMASTOOL.md`); findings are documented in `docs/re/`.
 | `src/game/` | The four games' widescreen, achievements, cheats, level select and co-op |
 | `src/app/` | The application, the same on both systems: `app.cpp` (launcher, game, menu pages, achievements), menus (`menu.cpp`), launcher, music player, settings, drawn on `canvas.h`; `sys.h` for files and paths. Windows: `app_win.cpp` (window, frame pacing, test modes), `video.cpp` (Direct3D 11), `canvas_d2d.cpp` (Direct2D / DirectWrite), `audio.cpp` (XAudio2), `input.cpp` (XInput / DirectInput) |
 | `src/platform/android/` | Android: `app_android.cpp` (SDL window, events, pacing, ROM picker), `video_gles.cpp` (OpenGL ES picture and canvas, text from Android's own font), `audio_sdl.cpp`, `input_sdl.cpp`, `touch.cpp` |
+| `src/platform/macos/` | macOS: `app_macos.mm` (SDL window, events, pacing, ROM picker), `video_metal.mm` (Metal picture and canvas, text from Core Text), `slang_metal.mm` (librashader); sound and controllers from `src/platform/android/` |
 | `android/` | Gradle project; `SmasActivity.java` adds the ROM picker and the UI font rasteriser to SDL's activity |
 
-The Android build uses SDL2 by Sam Lantinga and contributors (zlib licence, `third_party/SDL2-2.32.10-src`).
+The Android and macOS builds use SDL2 by Sam Lantinga and contributors (zlib licence, `third_party/SDL2-2.32.10-src`).
 The launcher's title is set in Luckiest Guy by Astigmatic (Apache 2.0 licence, `third_party/fonts`), copied beside the exe and into the Android app.

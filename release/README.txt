@@ -1,13 +1,30 @@
-SUPER MARIO ALL-STARS - PC, STEAM DECK & ANDROID PORT
-Version 1.0
+SUPER MARIO ALL-STARS - PC, STEAM DECK, MAC & ANDROID PORT
+Version 1.1.1
 
-A native Windows, Linux (Steam Deck) and Android version of Super Mario
+A native Windows, Linux (Steam Deck), macOS and Android version of Super Mario
 All-Stars (SNES), with true widescreen, simultaneous two-player co-op, a
 launcher, save states, rewind, achievements, cheats, level select, a sound test
 and a music player.
 
 The four games: Super Mario Bros., Super Mario Bros.: The Lost Levels,
 Super Mario Bros. 2 and Super Mario Bros. 3.
+
+New in 1.1.1:
+  - Update notifications: the launcher shows a badge when a newer version
+    is on GitHub (Options > Updates; checked once a day, can be turned off).
+  - Music Volume and Sound Effects Volume (Options > Audio): turn the music
+    off and keep the sound effects, or the other way round.
+
+New in 1.1:
+  - Custom soundtracks: MSU-1 music packs (see CUSTOM SOUNDTRACKS below),
+    in the games and the Music Player.
+  - Your own game covers and launcher background.
+  - Four menu styles (Storybook, Retro, Themed Dark, Classic).
+  - NES Brick Bounce option, Menu Buttons swap (Xbox / Nintendo layout),
+    achievements export (CSV and badges, for Playnite).
+  - Steam Deck / Linux version.
+  - Faster launcher, smoother on slower PCs and phones, a fix for slowdown
+    with G-SYNC / VSync, and many widescreen, co-op and other bug fixes.
 
 
 =====================================================================
@@ -95,6 +112,30 @@ F11 or Alt+Enter switches between windowed and fullscreen. Saves, states and
 settings are kept in ~/.local/share/SuperMarioAllStars. On Linux the slang
 shader presets and High Frame Rate aren't available (the built-in CRT filters
 are).
+
+
+=====================================================================
+ MAC
+=====================================================================
+
+Requirements: macOS 11 Big Sur or later, on an Apple silicon or Intel Mac.
+
+1. Open SuperMarioAllStars-macOS.zip and move Super Mario All-Stars to your
+   Applications folder.
+2. Open it. The app isn't signed with an Apple developer account, so the
+   first time macOS says it can't check it for malware. On macOS 15 or later,
+   click Done, then System Settings > Privacy & Security > Open Anyway. On
+   macOS 11 to 14, right-click the app, choose Open, then Open again. You only
+   do this once.
+3. Click the "ROM not found" card and pick your
+   "Super Mario All-Stars (USA).sfc"; it is copied in, so you only do this
+   once. (Or drop the file on the window, or put it in a "roms" folder beside
+   the app.)
+
+Option+Return or Ctrl+Cmd+F switches between windowed and fullscreen. Saves,
+states and settings are kept in ~/Library/Application Support/
+SuperMarioAllStars. The slang shader presets work on the Mac too (your own
+go in a "shaders" folder there); High Frame Rate is Windows-only.
 
 
 =====================================================================
@@ -198,8 +239,10 @@ shown centred, as they were designed as a single screen.
                  frame insertion, high frame rate (100 Hz+ displays).
   Graphics       filters (sharp bilinear, CRT scanlines, aperture grille, LCD
                  grid, ...), screen curvature, sprite-limit removal.
-                 Windows: Slang Shader runs RetroArch slang presets from the
-                 "shaders" folder next to the exe (needs librashader.dll).
+                 Windows and Mac: Slang Shader runs RetroArch slang presets
+                 from the "shaders" folder next to the exe (needs
+                 librashader.dll; on the Mac it's in the app, and your own
+                 presets go in the data folder's "shaders").
                  Seven CRT presets come included: CRT Lottes, CRT Geom,
                  CRT Royale, CRT Easymode, CRT Aperture, zfast CRT and CRT Pi.
                  You can add more (e.g. the libretro slang-shaders collection)
@@ -210,6 +253,86 @@ shown centred, as they were designed as a single screen.
                  outfits, Super Mario Bros. and The Lost Levels only).
   Launcher       "Launcher Shows": one Super Mario All-Stars card (default)
                  or The Four Games as separate cards.
+                 "Game Covers" shows your own cover pictures on the cards in
+                 place of the live previews, and "Custom Background" your own
+                 picture behind the launcher. None are included - add your
+                 own (PNG or JPG):
+                   PC / Steam Deck: Open Covers Folder, then name them
+                     smb1, lostlevels, smb2, smb3, allstars (the single
+                     card) and background (e.g. smb3.png, background.jpg).
+                     Switch the option off and on again to read new ones.
+                   Android: Choose Cover / Choose Background pick a picture
+                     from your phone.
+                 "Cover Shape": Whole Cover (the default: all of it, with
+                 bars beside a tall box) or Fill the Frame (trimmed to fill).
+                 A card without a cover keeps its live preview. Covers also
+                 make the launcher lighter on slow devices (no preview runs
+                 for a card with a cover).
+  Menu Style     how these menus look: Storybook (bright and chunky, the
+                 default), Retro (black, bricks and a pixel font), Themed Dark
+                 (the dark panel under the game's own heading) or Classic.
+  Controls       bindings for both players, Select Button, and Menu Buttons:
+                 Right Confirms makes the pad's right face button choose in
+                 the menus and the bottom one go back (Nintendo's layout).
+  Audio          volume, Music Volume and Sound Effects Volume (set music to
+                 0% to play with sound effects only, or the other way round),
+                 latency, and Music Pack (custom soundtracks, below).
+  Updates        "Check for Updates" (on by default): once a day the launcher
+                 looks up the latest release on GitHub and shows a badge when
+                 there's a newer version (select it to open the download
+                 page). Nothing about you or your games is sent; turn it off
+                 here, or use Check Now. Nothing is downloaded or installed
+                 by itself.
+  Gameplay       NES Brick Bounce: in Super Mario Bros. and The Lost Levels,
+                 breaking a brick from below sends Mario back down as on the
+                 NES (All-Stars lets him keep rising). Off by default.
+
+
+=====================================================================
+ CUSTOM SOUNDTRACKS (MSU-1)
+=====================================================================
+
+The port plays MSU-1 music packs: CD-quality replacement music made for
+real-hardware flash carts and emulators. None are included. A pack is two
+things, often downloaded separately:
+  - an MSU-1 patch for Super Mario All-Stars (.bps or .ips), and
+  - its music tracks (files named like sma_msu1-1.pcm, sma_msu1-2.pcm, ...).
+
+Put each pack in its own folder inside the "msu" folder:
+  Windows:    the "msu" folder next to SuperMarioAllStars.exe
+              (Menu > Options > Audio > Open MSU-1 Folder opens it)
+  Steam Deck: ~/.local/share/SuperMarioAllStars/msu
+  Mac:        ~/Library/Application Support/SuperMarioAllStars/msu
+              (Menu > Options > Audio > Open MSU-1 Folder opens it)
+  Android:    Android/data/com.darhkfox.allstars/files/msu
+              (copy it in from a PC over USB)
+
+  msu/
+    Deluxe/
+      sma_msu1.bps
+      sma_msu1-1.pcm
+      sma_msu1-2.pcm
+      ...
+
+Then choose it under Options > Audio > Music Pack (on the launcher, or in
+the game's menu). From the launcher it starts with the next game; in a game,
+Restart With This Pack starts the game again with it. The line under the option says
+whether the pack was found and which patch it used.
+
+  - Don't patch your ROM file yourself: the port applies the pack's patch as
+    it loads the ROM and never changes the file. The patch must be for the
+    USA ROM without a copier header (the usual "sfc" patch).
+  - A pack that came without a patch: put the patch in the same folder as
+    its tracks, or once in the "msu" folder itself for all packs.
+  - Tracks a pack doesn't have play the game's own music.
+  - Super Mario All-Stars Deluxe (the pack with extra tracks) needs its own
+    patch, which picks one of several versions of the music as you reach
+    each new level (a new game starts with the usual one).
+  - Music Pack Volume sets the pack's music against the game's sound effects.
+  - The Music Player plays the chosen pack's songs too (its Music option
+    switches between the pack and the original songs).
+  - Save states remember the track playing. Load them with the same pack
+    chosen as when they were made.
 
 
 =====================================================================
@@ -222,6 +345,14 @@ shown centred, as they were designed as a single screen.
 Fair play: while achievements are on, cheats, level select, fast forward and
 rewind are switched off. Turn achievements off under Options to use them.
 A run counts when the game is started from the launcher or with Reset Game.
+
+Export to CSV (in the Achievements list) writes an "achievements export"
+folder: achievements.csv (ID, title, description, points, trophy type,
+hidden, progress, unlocked and when, icon paths) and icons/ with each
+achievement's badge, earned and locked - ready for PlayniteAchievements'
+spreadsheet import. Windows: next to the exe; Steam Deck:
+~/.local/share/SuperMarioAllStars; Mac: ~/Library/Application Support/
+SuperMarioAllStars; Android: Android/data/com.darhkfox.allstars/files.
 
 
 =====================================================================
@@ -282,10 +413,13 @@ Super Mario All-Stars PC Port
   Patreon   patreon.com/c/TeamRedTail
 
 Third-party components:
-  SDL2 (Android and Linux builds) - Sam Lantinga and contributors, zlib licence.
+  SDL2 (Android, Linux and Mac builds) - Sam Lantinga and contributors, zlib licence.
   DejaVu Sans font (Linux build) - DejaVu fonts team, Bitstream Vera licence.
   Luckiest Guy font - Astigmatic, Apache License 2.0.
-  librashader (Windows slang shaders) - Mozilla Public License 2.0
+  stb_image (reading your cover pictures) - Sean Barrett, public domain / MIT.
+  NES Brick Bounce - BMF54123's SMAS brick block fix (updated by Blittle
+    McNilsen).
+  librashader (Windows and Mac slang shaders) - Mozilla Public License 2.0
     (librashader-LICENSE.md; source: github.com/SnowflakePowered/librashader).
   Included slang shader presets, unmodified from the libretro slang-shaders
     collection (github.com/libretro/slang-shaders):

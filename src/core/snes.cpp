@@ -48,6 +48,7 @@ bool Snes::execCheck(uint32_t pc) {
 }
 
 void Snes::reset(bool hard) {
+  if (msu) msu->reset();
   if (hard) {
     std::memset(wram, 0x55, sizeof(wram));
     ppu.reset(true);
@@ -222,8 +223,10 @@ void Snes::stepInstruction() {
 }
 
 void Snes::takeAudio(std::vector<int16_t>& out) {
+  const size_t at = out.size();
   out.insert(out.end(), apu.samples.begin(), apu.samples.end());
   apu.samples.clear();
+  if (msu) msu->mix(out.data() + at, (out.size() - at) / 2, kSampleRate);  // (its music, mixed in)
 }
 
 // ---------------------------------------------------------------------------
@@ -392,6 +395,7 @@ void Snes::writeBBus(uint8_t a, uint8_t v) {
 }
 
 uint8_t Snes::readIo(uint16_t a) {
+  if (msu && a >= 0x2000 && a < 0x2008) return msu->read(a);
   if (a >= 0x2100 && a < 0x2200) {
     if (a == 0x2137) {
       if (wrio_ & 0x80) ppu.latchCounters(hPos_ / 4, vPos_);
@@ -456,6 +460,10 @@ uint8_t Snes::readIo(uint16_t a) {
 }
 
 void Snes::writeIo(uint16_t a, uint8_t v) {
+  if (msu && a >= 0x2000 && a < 0x2008) {
+    msu->write(a, v);
+    return;
+  }
   if (a >= 0x2100 && a < 0x2200) {
     writeBBus(a & 0xff, v);
     return;
